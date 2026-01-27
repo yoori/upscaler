@@ -22,6 +22,7 @@ class UpscaleFaceInfo:
   bbox: typing.List[int]
   face_px: int
   algorithm: str
+  landmarks5: typing.Optional[typing.List[typing.List[float]]] = None
 
 
 @dataclasses.dataclass
@@ -385,10 +386,14 @@ class Upscaler(object):
 
     for i, face_crop in enumerate(helper.cropped_faces):
       face_px = faces[i]['size_px']
+      landmarks5 = None
+      if i < len(helper.all_landmarks_5):
+        landmarks5 = helper.all_landmarks_5[i].astype(float).tolist()
       face_info = UpscaleFaceInfo(
         bbox=faces[i]["bbox"],
         face_px=face_px,
         algorithm="",
+        landmarks5=landmarks5,
       )
 
       if (
