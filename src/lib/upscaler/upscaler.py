@@ -271,6 +271,57 @@ class Upscaler(object):
 
     return img
 
+  def _create_face_oval_mask(
+    self,
+    face_crop: np.ndarray,
+    *,
+    landmarks_5: np.ndarray,
+    affine_matrix: np.ndarray,
+  ) -> np.ndarray:
+    """
+    Build an oval mask that covers the main facial area (eyes + mouth),
+    aligned to the face orientation using FaceRestoreHelper landmarks.
+
+    Returns a uint8 mask (0/255) matching the face crop size.
+    """
+
+    face = self._cv2_ready_bgr(face_crop)
+    h, w = face.shape[:2]
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    default_center = (int(w * 0.5), int(h * 0.55))
+    default_axes = (max(1, int(w * 0.45)), max(1, int(h * 0.60)))
+
+    ellipse = None
+    if landmarks_5 is not None and affine_matrix is not None:
+      points = np.asarray(landmarks_5, dtype=np.float32).reshape(-1, 2)
+      if points.shape[0] >= 5:
+        points = cv2.transform(points[None, :, :], affine_matrix)[0]
+        eye_left, eye_right, _, mouth_left, mouth_right = points[:5]
+        mouth_center = (mouth_left + mouth_right) * 0.5
+        ellipse_points = np.stack(
+          [eye_left, eye_right, mouth_left, mouth_right, mouth_center],
+          axis=0,
+        )
+        try:
+          ellipse = cv2.fitEllipse(ellipse_points.astype(np.float32))
+        except cv2.error:
+          ellipse = None
+
+    if ellipse is not None:
+      (cx, cy), (width, height), angle = ellipse
+      scale = 1.02
+      axes = (
+        max(1, int(width * 0.5 * scale)),
+        max(1, int(height * 0.5 * scale)),
+      )
+      center = (int(cx), int(cy))
+      cv2.ellipse(mask, center, axes, float(angle), 0, 360, 255, -1)
+    else:
+      cv2.ellipse(mask, default_center, default_axes, 0, 0, 360, 255, -1)
+
+    return mask
+
   def _apply_faces_routed(
     self,
     *,
