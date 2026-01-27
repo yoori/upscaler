@@ -18,6 +18,20 @@ FaceMode = typing.Literal["off", "gfpgan", "auto_per_face", "auto_per_face_cf"]
 
 
 @dataclasses.dataclass
+class UpscaleFaceInfo:
+  bbox: typing.List[int]
+  face_px: int
+  algorithm: str
+
+
+@dataclasses.dataclass
+class UpscaleInfo:
+  face_mode: FaceMode
+  faces: typing.List[UpscaleFaceInfo] = dataclasses.field(default_factory=list)
+  fallback: typing.Optional[str] = None
+
+
+@dataclasses.dataclass
 class UpscaleParams:
   outscale: float = 4.0
   tile: int = 0
@@ -118,13 +132,11 @@ class Upscaler(object):
     self,
     img_bgr: np.ndarray,
     params: typing.Optional[UpscaleParams] = None,
-  ) -> typing.Tuple[np.ndarray, typing.Dict]:
+  ) -> typing.Tuple[np.ndarray, UpscaleInfo]:
     if params is None:
       params = UpscaleParams()
 
-    result_info = {
-      "face_mode": params.face_mode
-    }
+    result_info = UpscaleInfo(face_mode=params.face_mode)
 
     if img_bgr is None or img_bgr.ndim != 3 or img_bgr.shape[2] != 3:
       raise Upscaler.Exception("Expected BGR image HxWx3")
@@ -333,8 +345,8 @@ class Upscaler(object):
     gfpgan_weight_small: float,
     codeformer_fidelity: float,
     enable_codeformer: bool,
-    info: typing.Dict = {}
-  ) -> typing.Tuple[np.ndarray, typing.Dict]:
+    info: UpscaleInfo,
+  ) -> typing.Tuple[np.ndarray, UpscaleInfo]:
 
     print("XXX P3\n")
     helper = self._face_helper
@@ -361,29 +373,30 @@ class Upscaler(object):
             weight=gfpgan_weight_normal,
             only_center_face=only_center_face,
           ),
-          info | {'fallback': 'det_faces != cropped_faces'},
+          dataclasses.replace(info, fallback="det_faces != cropped_faces"),
         )
       return (
         upscaled_bgr,
-        info | {'fallback': 'det_faces != cropped_faces'},
+        dataclasses.replace(info, fallback="det_faces != cropped_faces"),
       )
 
     restored_faces: typing.List[np.ndarray] = []
-    face_infos = []
+    face_infos: typing.List[UpscaleFaceInfo] = []
 
     for i, face_crop in enumerate(helper.cropped_faces):
       face_px = faces[i]['size_px']
-      face_info = {
-        'bbox': faces[i]['bbox'],
-        'face_px': face_px,
-      }
+      face_info = UpscaleFaceInfo(
+        bbox=faces[i]["bbox"],
+        face_px=face_px,
+        algorithm="",
+      )
 
       if (
         enable_codeformer and
         self._codeformer_net is not None and
         face_px < min_face_px
       ):
-        face_info['algorithm'] = 'codeformer'
+        face_info.algorithm = "codeformer"
         result_face, diff_mask, d = self._restore_face_codeformer(face_crop, fidelity=codeformer_fidelity)
         self._debug_save_codeformer(
           face_crop_bgr=face_crop,
@@ -395,7 +408,7 @@ class Upscaler(object):
         )
         local_restored_faces = [ result_face ]
       elif self._face_enhancer is not None:
-        face_info['algorithm'] = 'gfpgan'
+        face_info.algorithm = "gfpgan"
         w = gfpgan_weight_small if face_px < min_face_px else gfpgan_weight_normal
         _, local_restored_faces, _ = self._face_enhancer.enhance(
           face_crop,
@@ -406,7 +419,7 @@ class Upscaler(object):
         )
       else:
         # fallback
-        face_info['algorithm'] = 'fallback'
+        face_info.algorithm = "fallback"
         local_restored_faces = [face_crop]
 
       if local_restored_faces:
@@ -423,7 +436,7 @@ class Upscaler(object):
     #print(f"XXX P4, result_info = {str(result_info)}")
     return (
       helper.paste_faces_to_input_image(upsample_img=None),
-      info | {'faces': face_infos},
+      dataclasses.replace(info, faces=face_infos),
     )
 
   def _load_codeformer(self, weights_path: str):
