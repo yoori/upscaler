@@ -109,15 +109,18 @@ class Upscaler(object):
   async def upscale(
     self,
     img_bgr: np.ndarray,
-    params: UpscaleParams = UpscaleParams(),
+    params: typing.Optional[UpscaleParams] = None,
   ) -> np.ndarray:
-    return await self.upscale_with_info(img_bgr, params=params)
+    result, _ = await self.upscale_with_info(img_bgr, params=params)
+    return result
 
   async def upscale_with_info(
     self,
     img_bgr: np.ndarray,
-    params: UpscaleParams = UpscaleParams(),
+    params: typing.Optional[UpscaleParams] = None,
   ) -> typing.Tuple[np.ndarray, typing.Dict]:
+    if params is None:
+      params = UpscaleParams()
 
     result_info = {
       "face_mode": params.face_mode
