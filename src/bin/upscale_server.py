@@ -72,7 +72,7 @@ async def lifespan(app: fastapi.FastAPI):
 
 app = fastapi.FastAPI(
   lifespan=lifespan,
-  title="Upscale API (Real-ESRGAN + optional GFPGAN)",
+  title="Upscale API (Real-ESRGAN + optional GFPGAN/CodeFormer)",
   docs_url='/rest/docs',
 )
 
@@ -90,7 +90,7 @@ async def upscale(
   file: fastapi.UploadFile = fastapi.File(...),
   outscale: float = fastapi.Query(4.0, ge=1.0, le=8.0, description="Output scale multiplier (e.g. 2, 4)"),
   tile: int = fastapi.Query(0, ge=0, le=2048, description="Tile size to reduce VRAM, 0=disabled"),
-  face: bool = fastapi.Query(False, description="Enable face restoration (GFPGAN) if available"),
+  face: bool = fastapi.Query(False, description="Enable face restoration (GFPGAN/CodeFormer) if available"),
 ):
   """
   Upload one image -> return upscaled PNG.
@@ -106,8 +106,14 @@ async def upscale(
   except Exception as e:
     raise fastapi.HTTPException(status_code=400, detail=f"Bad image: {e}")
 
+  params = upscaler.UpscaleParams(
+    outscale=outscale,
+    tile=tile,
+    face_mode=("auto_per_face_cf" if face else "off"),
+  )
+
   try:
-    up_img = await upscalerr.upscale(img, outscale=outscale, tile=tile, face=face)
+    up_img = await upscalerr.upscale(img, params=params)
   except Exception as e:
     raise fastapi.HTTPException(status_code=500, detail=f"Enhancement failed: {e}")
 
@@ -141,17 +147,17 @@ async def upscale_batch(
     payloads.append((f.filename or "image", data))
 
   zip_buf = io.BytesIO()
+  params = upscaler.UpscaleParams(
+    outscale=outscale,
+    tile=tile,
+    face_mode=("auto_per_face_cf" if face else "off"),
+  )
 
   with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
     for name, data in payloads:
       try:
         img = read_image_bytes_as_bgr(data)
-        up_img, _ = await upscalerr.upscale(
-          img,
-          outscale=outscale,
-          tile=tile,
-          face=face,
-        )
+        up_img = await upscalerr.upscale(img, params=params)
         png = encode_bgr_to_png_bytes(up_img)
       except Exception as e:
         raise fastapi.HTTPException(status_code=500, detail=f"Failed on {name}: {e}")
