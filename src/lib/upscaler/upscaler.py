@@ -19,10 +19,58 @@ FaceMode = typing.Literal["off", "gfpgan", "auto_per_face", "auto_per_face_cf"]
 
 @dataclasses.dataclass
 class UpscaleFaceInfo:
-  bbox: typing.List[int]
+  bbox: typing.List[float]
   face_px: int
   algorithm: str
   landmarks5: typing.Optional[typing.List[typing.List[float]]] = None
+
+  def visualize(
+    self,
+    image_bgr: np.ndarray,
+    *,
+    point_radius: int = 2,
+    point_color: typing.Tuple[int, int, int] = (0, 255, 0),
+  ) -> np.ndarray:
+    """
+    Return cropped face from the full image with landmarks highlighted.
+    Expects bbox/landmarks normalized to [0..1] relative to the image size.
+    """
+    if image_bgr is None or image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
+      raise ValueError("Expected BGR image HxWx3")
+
+    h, w = image_bgr.shape[:2]
+    x1_f, y1_f, x2_f, y2_f = [float(v) for v in self.bbox]
+    x1_f = max(0.0, min(1.0, x1_f))
+    x2_f = max(0.0, min(1.0, x2_f))
+    y1_f = max(0.0, min(1.0, y1_f))
+    y2_f = max(0.0, min(1.0, y2_f))
+    x1 = int(round(x1_f * w))
+    x2 = int(round(x2_f * w))
+    y1 = int(round(y1_f * h))
+    y2 = int(round(y2_f * h))
+
+    x1 = max(0, min(x1, w))
+    x2 = max(0, min(x2, w))
+    y1 = max(0, min(y1, h))
+    y2 = max(0, min(y2, h))
+
+    if x2 <= x1 or y2 <= y1:
+      return image_bgr[0:0, 0:0].copy()
+
+    crop = image_bgr[y1:y2, x1:x2].copy()
+
+    if self.landmarks5:
+      for point in self.landmarks5:
+        if len(point) < 2:
+          continue
+        if not (0.0 <= float(point[0]) <= 1.0 and 0.0 <= float(point[1]) <= 1.0):
+          continue
+        px = int(round(point[0] * w - x1))
+        py = int(round(point[1] * h - y1))
+        if 0 <= px < crop.shape[1] and 0 <= py < crop.shape[0]:
+          cv2.circle(crop, (px, py), int(point_radius), point_color, -1)
+
+    return crop
 
 
 @dataclasses.dataclass
@@ -384,13 +432,26 @@ class Upscaler(object):
     restored_faces: typing.List[np.ndarray] = []
     face_infos: typing.List[UpscaleFaceInfo] = []
 
+    up_h, up_w = upscaled_bgr.shape[:2]
+    orig_h, orig_w = original_bgr.shape[:2]
+
     for i, face_crop in enumerate(helper.cropped_faces):
       face_px = faces[i]['size_px']
       landmarks5 = None
       if i < len(helper.all_landmarks_5):
-        landmarks5 = helper.all_landmarks_5[i].astype(float).tolist()
+        landmarks = helper.all_landmarks_5[i].astype(float)
+        landmarks[:, 0] /= float(up_w) if up_w else 1.0
+        landmarks[:, 1] /= float(up_h) if up_h else 1.0
+        landmarks5 = landmarks.tolist()
+      x1, y1, x2, y2 = faces[i]["bbox"]
+      bbox_norm = [
+        float(x1) / float(orig_w) if orig_w else 0.0,
+        float(y1) / float(orig_h) if orig_h else 0.0,
+        float(x2) / float(orig_w) if orig_w else 0.0,
+        float(y2) / float(orig_h) if orig_h else 0.0,
+      ]
       face_info = UpscaleFaceInfo(
-        bbox=faces[i]["bbox"],
+        bbox=bbox_norm,
         face_px=face_px,
         algorithm="",
         landmarks5=landmarks5,
