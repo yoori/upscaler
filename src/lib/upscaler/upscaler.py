@@ -17,12 +17,20 @@ import codeformer.basicsr.archs.codeformer_arch
 FaceMode = typing.Literal["off", "gfpgan", "auto_per_face", "auto_per_face_cf"]
 
 
+@dataclasses.dataclass(frozen=True)
+class Ellipse:
+  center: typing.Tuple[float, float]
+  axes: typing.Tuple[float, float]
+  angle: float
+
+
 @dataclasses.dataclass
 class UpscaleFaceInfo:
   bbox: typing.List[float]
   face_px: int
   algorithm: str
   landmarks5: typing.Optional[typing.List[typing.List[float]]] = None
+  eye_ellipse: typing.Optional[Ellipse] = None
 
   def visualize(
     self,
@@ -35,8 +43,16 @@ class UpscaleFaceInfo:
     Return cropped face from the full image with landmarks highlighted.
     Expects bbox/landmarks normalized to [0..1] relative to the image size.
     """
-    if image_bgr is None or image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
-      raise ValueError("Expected BGR image HxWx3")
+    if image_bgr is None:
+      raise ValueError("Expected image array")
+    if image_bgr.ndim == 2:
+      image_bgr = cv2.cvtColor(image_bgr, cv2.COLOR_GRAY2BGR)
+    elif image_bgr.ndim == 3 and image_bgr.shape[2] == 1:
+      image_bgr = cv2.cvtColor(image_bgr, cv2.COLOR_GRAY2BGR)
+    elif image_bgr.ndim == 3 and image_bgr.shape[2] == 4:
+      image_bgr = cv2.cvtColor(image_bgr, cv2.COLOR_BGRA2BGR)
+    elif image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
+      raise ValueError("Expected image HxW or HxWx3")
 
     h, w = image_bgr.shape[:2]
     x1_f, y1_f, x2_f, y2_f = [float(v) for v in self.bbox]
@@ -71,6 +87,31 @@ class UpscaleFaceInfo:
           cv2.circle(crop, (px, py), int(point_radius), point_color, -1)
 
     return crop
+
+  def get_eye_mask(self, *, width: int, height: int) -> np.ndarray:
+    """
+    Return a binary (0/255) mask for the eye ellipse in image coordinates.
+    Expects eye_ellipse params normalized to [0..1] relative to the image size.
+    """
+    if not self.eye_ellipse:
+      return np.zeros((0, 0), dtype=np.uint8)
+
+    if width <= 0 or height <= 0:
+      return np.zeros((0, 0), dtype=np.uint8)
+
+    cx = float(self.eye_ellipse.center[0]) * width
+    cy = float(self.eye_ellipse.center[1]) * height
+    ax = float(self.eye_ellipse.axes[0]) * width
+    ay = float(self.eye_ellipse.axes[1]) * height
+
+    if ax <= 0 or ay <= 0:
+      return np.zeros((0, 0), dtype=np.uint8)
+
+    mask = np.zeros((height, width), dtype=np.uint8)
+    center_px = (int(round(cx)), int(round(cy)))
+    axes_px = (max(1, int(round(ax))), max(1, int(round(ay))))
+    cv2.ellipse(mask, center_px, axes_px, float(self.eye_ellipse.angle), 0, 360, 255, -1)
+    return mask
 
 
 @dataclasses.dataclass
@@ -383,6 +424,59 @@ class Upscaler(object):
 
     return mask
 
+  def _create_eye_ellipse(
+    self,
+    *,
+    landmarks5: typing.List[typing.List[float]],
+    image_shape: typing.Tuple[int, int],
+  ) -> typing.Optional[Ellipse]:
+    """
+    Build a directed oval mask for the eye region.
+    The oval axis follows the eye line and covers eye corners plus half the nose.
+    Returns normalized ellipse params for use on any image of the same aspect.
+    """
+    if not landmarks5 or len(landmarks5) < 3:
+      return None
+
+    h, w = image_shape
+    if h <= 0 or w <= 0:
+      return None
+
+    points = np.asarray(landmarks5, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 3:
+      return None
+
+    left_eye, right_eye, nose = points[:3]
+
+    lx, ly = float(left_eye[0]) * w, float(left_eye[1]) * h
+    rx, ry = float(right_eye[0]) * w, float(right_eye[1]) * h
+    nx, ny = float(nose[0]) * w, float(nose[1]) * h
+
+    eye_dx = rx - lx
+    eye_dy = ry - ly
+    eye_dist = float(np.hypot(eye_dx, eye_dy))
+    if eye_dist <= 1e-6:
+      return None
+
+    eye_center_x = (lx + rx) * 0.5
+    eye_center_y = (ly + ry) * 0.5
+    nose_vec_x = nx - eye_center_x
+    nose_vec_y = ny - eye_center_y
+    nose_dist = float(np.hypot(nose_vec_x, nose_vec_y))
+
+    center_x = eye_center_x + nose_vec_x * 0.35
+    center_y = eye_center_y + nose_vec_y * 0.35
+
+    angle_deg = float(np.degrees(np.arctan2(eye_dy, eye_dx)))
+    axis_x = max(1.0, eye_dist * 0.7)
+    axis_y = max(1.0, max(eye_dist * 0.45, nose_dist * 0.6))
+
+    return Ellipse(
+      center=(center_x / w, center_y / h),
+      axes=(axis_x / w, axis_y / h),
+      angle=angle_deg,
+    )
+
   def _apply_faces_routed(
     self,
     *,
@@ -438,11 +532,16 @@ class Upscaler(object):
     for i, face_crop in enumerate(helper.cropped_faces):
       face_px = faces[i]['size_px']
       landmarks5 = None
+      eye_ellipse = None
       if i < len(helper.all_landmarks_5):
         landmarks = helper.all_landmarks_5[i].astype(float)
         landmarks[:, 0] /= float(up_w) if up_w else 1.0
         landmarks[:, 1] /= float(up_h) if up_h else 1.0
         landmarks5 = landmarks.tolist()
+        eye_ellipse = self._create_eye_ellipse(
+          landmarks5=landmarks5,
+          image_shape=(orig_h, orig_w),
+        )
       x1, y1, x2, y2 = faces[i]["bbox"]
       bbox_norm = [
         float(x1) / float(orig_w) if orig_w else 0.0,
@@ -455,6 +554,7 @@ class Upscaler(object):
         face_px=face_px,
         algorithm="",
         landmarks5=landmarks5,
+        eye_ellipse=eye_ellipse,
       )
 
       if (

@@ -36,16 +36,31 @@ async def main(
     for idx, face_info in enumerate(upscale_info.faces):
       orig_face = face_info.visualize(img)
       up_face = face_info.visualize(out)
-      if orig_face.size == 0 or up_face.size == 0:
+      eye_mask = face_info.get_eye_mask(width=img.shape[1], height=img.shape[0])
+      if orig_face.size == 0 or up_face.size == 0 or eye_mask.size == 0:
         continue
-      target_h = max(orig_face.shape[0], up_face.shape[0])
+      if eye_mask.shape[0] != img.shape[0] or eye_mask.shape[1] != img.shape[1]:
+        continue
+      eye_region = cv2.bitwise_and(img, img, mask=eye_mask)
+      ys, xs = (eye_mask > 0).nonzero()
+      if ys.size == 0 or xs.size == 0:
+        continue
+      y1, y2 = int(ys.min()), int(ys.max()) + 1
+      x1, x2 = int(xs.min()), int(xs.max()) + 1
+      eye_face = eye_region[y1:y2, x1:x2].copy()
+      if eye_face.size == 0:
+        continue
+      target_h = max(orig_face.shape[0], up_face.shape[0], eye_face.shape[0])
       if orig_face.shape[0] != target_h:
         new_w = max(1, int(round(orig_face.shape[1] * target_h / orig_face.shape[0])))
         orig_face = cv2.resize(orig_face, (new_w, target_h), interpolation=cv2.INTER_AREA)
       if up_face.shape[0] != target_h:
         new_w = max(1, int(round(up_face.shape[1] * target_h / up_face.shape[0])))
         up_face = cv2.resize(up_face, (new_w, target_h), interpolation=cv2.INTER_AREA)
-      face_img = cv2.hconcat([orig_face, up_face])
+      if eye_face.shape[0] != target_h:
+        new_w = max(1, int(round(eye_face.shape[1] * target_h / eye_face.shape[0])))
+        eye_face = cv2.resize(eye_face, (new_w, target_h), interpolation=cv2.INTER_AREA)
+      face_img = cv2.hconcat([orig_face, up_face, eye_face])
       face_path = os.path.join(output_faces, f"face_{idx}.png")
       cv2.imwrite(face_path, face_img)
 
