@@ -31,6 +31,7 @@ class UpscaleFaceInfo:
   algorithm: str
   landmarks5: typing.Optional[typing.List[typing.List[float]]] = None
   eye_ellipse: typing.Optional[Ellipse] = None
+  strong_change_mask: typing.Optional[np.ndarray] = None
 
   def visualize(
     self,
@@ -564,6 +565,7 @@ class Upscaler(object):
       ):
         face_info.algorithm = "codeformer"
         result_face, diff_mask, d = self._restore_face_codeformer(face_crop, fidelity=codeformer_fidelity)
+        face_info.strong_change_mask = diff_mask
         self._debug_save_codeformer(
           face_crop_bgr=face_crop,
           restored_bgr=result_face,
@@ -744,6 +746,50 @@ class Upscaler(object):
       "boxes": boxes,
       "d": d,
     }
+
+  def _strong_change_mask_mean_window(
+    self,
+    img0_bgr: np.ndarray,
+    img1_bgr: np.ndarray,
+    *,
+    win: int,
+    diff_thr: float,
+  ) -> np.ndarray:
+    """
+    Return a binary mask for strong changes based on per-window mean color difference.
+
+    - img0_bgr, img1_bgr: input images (any size, will be resized to img0)
+    - win: window size for averaging (odd recommended, min 1)
+    - diff_thr: threshold in 0..255 mean absolute color units
+    """
+    if img0_bgr is None or img1_bgr is None:
+      raise ValueError("img0_bgr/img1_bgr is None")
+
+    base = self._cv2_ready_bgr(img0_bgr)
+    other = self._cv2_ready_bgr(img1_bgr)
+
+    if base.shape[:2] != other.shape[:2]:
+      h, w = base.shape[:2]
+      interp = cv2.INTER_AREA if (other.shape[0] > h or other.shape[1] > w) else cv2.INTER_LINEAR
+      other = cv2.resize(other, (w, h), interpolation=interp)
+
+    k = int(win)
+    if k < 1:
+      k = 1
+    if (k % 2) == 0:
+      k += 1
+
+    base_f = base.astype(np.float32)
+    other_f = other.astype(np.float32)
+
+    base_mean = cv2.blur(base_f, (k, k))
+    other_mean = cv2.blur(other_f, (k, k))
+
+    diff = np.abs(other_mean - base_mean)
+    diff_mean = diff.mean(axis=2)
+
+    mask_u8 = (diff_mean >= float(diff_thr)).astype(np.uint8) * 255
+    return mask_u8
 
   def _debug_save_codeformer(
     self,
