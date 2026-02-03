@@ -332,6 +332,7 @@ class Upscaler(object):
     )
 
     det_faces = getattr(helper, "det_faces", None)
+    print("X det_faces: " + str(det_faces))
     if det_faces is None:
       return []
 
@@ -517,7 +518,7 @@ class Upscaler(object):
             weight=gfpgan_weight_normal,
             only_center_face=only_center_face,
           ),
-          dataclasses.replace(info, fallback="det_faces != cropped_faces"),
+          dataclasses.replace(info, fallback="det_faces != cropped_faces (face_enhancer isn't null)"),
         )
       return (
         upscaled_bgr,
