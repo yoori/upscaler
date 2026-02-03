@@ -235,7 +235,7 @@ class Upscaler(object):
       raise Upscaler.Exception(f"Expected uint8 image, got {img_bgr.dtype}")
 
     tile = 0 if params.tile is None else int(params.tile)
-    outscale = float(params.outscale) if params.outscale is not None else 4.0
+    outscale = params.outscale
 
     async with self._lock:
       # 1) Upscale
@@ -331,19 +331,22 @@ class Upscaler(object):
       eye_dist_threshold=5,
     )
 
-    det_faces = getattr(helper, "det_faces", None)
-    print("X det_faces: " + str(det_faces))
-    if det_faces is None:
-      return []
-
-    out: typing.List[typing.Dict] = []
+    print(
+      f"XX1 len(det_faces) = {len(helper.det_faces)}, " +
+      f"len(all_landmarks_5) = {len(helper.all_landmarks_5)}, " +
+      f"len(cropped_faces) = {len(helper.cropped_faces)}"
+    )
+    det_faces = getattr(helper, "det_faces", [])
+    aligned_faces: typing.List[typing.Dict] = []
     for bb in det_faces:
       x1, y1, x2, y2 = bb[:4]
-      out.append({
+      aligned_faces.append({
         "bbox": [int(x1), int(y1), int(x2), int(y2)],
         "size_px": int(min(int(x2 - x1), int(y2 - y1))),
       })
-    return out
+
+    helper.align_warp_face()
+    return aligned_faces
 
   def _cv2_ready_bgr(self, img) -> np.ndarray:
     img = np.asarray(img)
@@ -493,21 +496,22 @@ class Upscaler(object):
     info: UpscaleInfo,
   ) -> typing.Tuple[np.ndarray, UpscaleInfo]:
 
-    print("XXX P3\n")
     helper = self._face_helper
 
     faces = self._detect_faces(
-      original_bgr,
+      upscaled_bgr,
       only_center_face=only_center_face,
     )
 
-    helper.clean_all()
-    helper.read_image(upscaled_bgr)
-    helper.get_face_landmarks_5(
-      only_center_face=only_center_face,
-      eye_dist_threshold=5,
+    print(
+      f"XX2 len(det_faces) = {len(helper.det_faces)}, " +
+      f"len(all_landmarks_5) = {len(helper.all_landmarks_5)}, " +
+      f"len(cropped_faces) = {len(helper.cropped_faces)}"
     )
-    helper.align_warp_face()
+
+    print("X helper.cropped_faces: " + str(helper.cropped_faces))
+    for c_i, c in enumerate(helper.cropped_faces):
+      cv2.imwrite("./C" + str(c_i) + ".jpg", c)
 
     # if mismatch, safe fallback: whole-image GFPGAN if available, else no-op
     if len(helper.cropped_faces) > 0 and len(faces) != len(helper.cropped_faces):

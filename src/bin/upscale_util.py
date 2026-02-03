@@ -21,6 +21,7 @@ async def main(
   use_codeformer: bool = True,
   codeformer_fidelity=0.3,
   output_faces: str = None,
+  outscale: float = 4.0,
 ):
   upscalerr = upscaler.Upscaler(
     realesrgan_weights="RealESRGAN_x4plus.pth",
@@ -33,7 +34,7 @@ async def main(
     out, upscale_info = await upscalerr.upscale_with_info(
       img,
       upscaler.UpscaleParams(
-        outscale=4,
+        outscale=outscale,
         codeformer_fidelity=codeformer_fidelity,
       )
     )
@@ -104,6 +105,7 @@ if __name__ == "__main__":
   parser.add_argument("--codeformer-fidelity", type=float, default=0.3)
   parser.add_argument('--no-codeformer', dest='use_codeformer', action='store_false')
   parser.add_argument("--output-faces", type=str, default=None)
+  parser.add_argument('--outscale', type=float, default=4.0)
   parser.set_defaults(use_codeformer=True)
   args = parser.parse_args()
 
@@ -133,5 +135,6 @@ if __name__ == "__main__":
       use_codeformer=args.use_codeformer,
       codeformer_fidelity=args.codeformer_fidelity,
       output_faces=args.output_faces,
+      outscale=args.outscale,
     )
   )
