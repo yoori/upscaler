@@ -24,6 +24,32 @@ class Ellipse:
   angle: float
 
 
+@dataclasses.dataclass(frozen=True)
+class FaceDetection:
+  bbox_px: typing.List[int]
+  bbox_norm: typing.List[float]
+  size_px: int
+
+  def __init__(self, *, bbox_px: typing.List[int], width: int, height: int) -> None:
+    x1, y1, x2, y2 = [int(v) for v in bbox_px]
+    object.__setattr__(self, "bbox_px", [x1, y1, x2, y2])
+    object.__setattr__(
+      self,
+      "bbox_norm",
+      [
+        float(x1) / float(width) if width else 0.0,
+        float(y1) / float(height) if height else 0.0,
+        float(x2) / float(width) if width else 0.0,
+        float(y2) / float(height) if height else 0.0,
+      ],
+    )
+    object.__setattr__(
+      self,
+      "size_px",
+      int(min(int(x2 - x1), int(y2 - y1))),
+    )
+
+
 @dataclasses.dataclass
 class UpscaleFaceInfo:
   bbox: typing.List[float]
@@ -183,15 +209,7 @@ class Upscaler(object):
     )
 
     # Face helper (used for align/paste-back for both GFPGAN and CodeFormer)
-    self._face_helper = facexlib.utils.face_restoration_helper.FaceRestoreHelper(
-      upscale_factor=1,
-      face_size=512,
-      crop_ratio=(1, 1),
-      det_model="retinaface_resnet50",
-      save_ext="png",
-      use_parse=True,
-      device=self._device,
-    )
+    self._face_helper = self._create_face_helper()
 
     # GFPGAN (optional)
     if self._gfpgan_weights is not None:
@@ -321,7 +339,7 @@ class Upscaler(object):
     img_bgr: np.ndarray,
     *,
     only_center_face: bool,
-  ) -> typing.List[typing.Dict]:
+  ) -> typing.List[FaceDetection]:
 
     helper = self._face_helper
     helper.clean_all()
@@ -337,16 +355,30 @@ class Upscaler(object):
       f"len(cropped_faces) = {len(helper.cropped_faces)}"
     )
     det_faces = getattr(helper, "det_faces", [])
-    aligned_faces: typing.List[typing.Dict] = []
+    aligned_faces: typing.List[FaceDetection] = []
+    h, w = img_bgr.shape[:2]
     for bb in det_faces:
       x1, y1, x2, y2 = bb[:4]
-      aligned_faces.append({
-        "bbox": [int(x1), int(y1), int(x2), int(y2)],
-        "size_px": int(min(int(x2 - x1), int(y2 - y1))),
-      })
+      bbox_px = [int(x1), int(y1), int(x2), int(y2)]
+      aligned_faces.append(FaceDetection(
+        bbox_px=bbox_px,
+        width=w,
+        height=h,
+      ))
 
     helper.align_warp_face()
     return aligned_faces
+
+  def _create_face_helper(self) -> facexlib.utils.face_restoration_helper.FaceRestoreHelper:
+    return facexlib.utils.face_restoration_helper.FaceRestoreHelper(
+      upscale_factor=1,
+      face_size=512,
+      crop_ratio=(1, 1),
+      det_model="retinaface_resnet50",
+      save_ext="png",
+      use_parse=True,
+      device=self._device,
+    )
 
   def _cv2_ready_bgr(self, img) -> np.ndarray:
     img = np.asarray(img)
@@ -536,7 +568,8 @@ class Upscaler(object):
     orig_h, orig_w = original_bgr.shape[:2]
 
     for i, face_crop in enumerate(helper.cropped_faces):
-      face_px = faces[i]['size_px']
+      face_detection = faces[i]
+      face_px = face_detection.size_px
       landmarks5 = None
       eye_ellipse = None
       if i < len(helper.all_landmarks_5):
@@ -548,13 +581,24 @@ class Upscaler(object):
           landmarks5=landmarks5,
           image_shape=(orig_h, orig_w),
         )
-      x1, y1, x2, y2 = faces[i]["bbox"]
-      bbox_norm = [
-        float(x1) / float(orig_w) if orig_w else 0.0,
-        float(y1) / float(orig_h) if orig_h else 0.0,
-        float(x2) / float(orig_w) if orig_w else 0.0,
-        float(y2) / float(orig_h) if orig_h else 0.0,
-      ]
+      bbox_norm = face_detection.bbox_norm
+      ox1 = int(round(bbox_norm[0] * orig_w))
+      oy1 = int(round(bbox_norm[1] * orig_h))
+      ox2 = int(round(bbox_norm[2] * orig_w))
+      oy2 = int(round(bbox_norm[3] * orig_h))
+      ox1 = max(0, min(ox1, orig_w))
+      ox2 = max(0, min(ox2, orig_w))
+      oy1 = max(0, min(oy1, orig_h))
+      oy2 = max(0, min(oy2, orig_h))
+      original_crop = None
+      if ox2 > ox1 and oy2 > oy1:
+        original_crop = original_bgr[oy1:oy2, ox1:ox2].copy()
+        if original_crop.size and original_crop.shape[:2] != face_crop.shape[:2]:
+          original_crop = cv2.resize(
+            original_crop,
+            (face_crop.shape[1], face_crop.shape[0]),
+            interpolation=cv2.INTER_LINEAR,
+          )
       face_info = UpscaleFaceInfo(
         bbox=bbox_norm,
         face_px=face_px,
@@ -569,10 +613,16 @@ class Upscaler(object):
         face_px < min_face_px
       ):
         face_info.algorithm = "codeformer"
-        result_face, diff_mask, d = self._restore_face_codeformer(face_crop, fidelity=codeformer_fidelity)
+        face_crop_for_codeformer = face_crop
+        if original_crop is not None:
+          face_crop_for_codeformer = original_crop
+        result_face, diff_mask, d = self._restore_face_codeformer(
+          face_crop_for_codeformer,
+          fidelity=codeformer_fidelity,
+        )
         face_info.strong_change_mask = diff_mask
         self._debug_save_codeformer(
-          face_crop_bgr=face_crop,
+          face_crop_bgr=face_crop_for_codeformer,
           restored_bgr=result_face,
           diff_mask=diff_mask,
           d=d,
