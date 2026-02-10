@@ -5,10 +5,22 @@ import os
 import pathlib
 import typing
 import json
+import numpy as np
 
 import cv2
 import torch
 import upscaler
+
+
+class NumpyAdaptEncoder(json.JSONEncoder):
+  def default(self, obj):
+    if isinstance(obj, np.ndarray):
+      return "np.ndarray" # Convert the array to a list
+    elif isinstance(obj, np.integer):
+      return int(obj) # Handle numpy specific integer types
+    elif isinstance(obj, np.floating):
+      return float(obj) # Handle numpy specific float types
+    return json.JSONEncoder.default(self, obj)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -90,7 +102,13 @@ async def main(
     )
 
     cv2.imwrite(str(file_info.output_file), out)
-    print("Result:\n" + json.dumps(dataclasses.asdict(upscale_info), indent=2))
+    print(
+      "Result:\n" + json.dumps(
+        dataclasses.asdict(upscale_info),
+        indent=2,
+        cls=NumpyAdaptEncoder,
+      )
+    )
 
     if output_faces:
       os.makedirs(output_faces, exist_ok=True)
