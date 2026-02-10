@@ -368,11 +368,6 @@ class Upscaler(object):
     )
     helper.align_warp_face()
 
-    print(
-      f"XX1 len(det_faces) = {len(helper.det_faces)}, " +
-      f"len(all_landmarks_5) = {len(helper.all_landmarks_5)}, " +
-      f"len(cropped_faces) = {len(helper.cropped_faces)}"
-    )
     det_faces = getattr(helper, "det_faces", [])
     affine_matrices = getattr(helper, "affine_matrices", [])
     aligned_faces: typing.List[FaceDetection] = []
@@ -554,16 +549,6 @@ class Upscaler(object):
       upscaled_bgr,
       only_center_face=only_center_face,
     )
-
-    print(
-      f"XX2 len(det_faces) = {len(helper.det_faces)}, " +
-      f"len(all_landmarks_5) = {len(helper.all_landmarks_5)}, " +
-      f"len(cropped_faces) = {len(helper.cropped_faces)}"
-    )
-
-    print("X helper.cropped_faces: " + str(helper.cropped_faces))
-    for c_i, c in enumerate(helper.cropped_faces):
-      cv2.imwrite("./C" + str(c_i) + ".jpg", c)
 
     # if mismatch, safe fallback: whole-image GFPGAN if available, else no-op
     if len(helper.cropped_faces) > 0 and len(faces) != len(helper.cropped_faces):

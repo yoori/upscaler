@@ -4,6 +4,7 @@ import dataclasses
 import os
 import pathlib
 import typing
+import json
 
 import cv2
 import torch
@@ -89,7 +90,7 @@ async def main(
     )
 
     cv2.imwrite(str(file_info.output_file), out)
-    print("Result:\n" + str(upscale_info))
+    print("Result:\n" + json.dumps(dataclasses.asdict(upscale_info), indent=2))
 
     if output_faces:
       os.makedirs(output_faces, exist_ok=True)
