@@ -29,8 +29,16 @@ class FaceDetection:
   bbox_px: typing.List[int]
   bbox_norm: typing.List[float]
   size_px: int
+  affine_matrix: typing.Optional[np.ndarray]
 
-  def __init__(self, *, bbox_px: typing.List[int], width: int, height: int) -> None:
+  def __init__(
+    self,
+    *,
+    bbox_px: typing.List[int],
+    width: int,
+    height: int,
+    affine_matrix: typing.Optional[np.ndarray] = None,
+  ) -> None:
     x1, y1, x2, y2 = [int(v) for v in bbox_px]
     object.__setattr__(self, "bbox_px", [x1, y1, x2, y2])
     object.__setattr__(
@@ -48,6 +56,7 @@ class FaceDetection:
       "size_px",
       int(min(int(x2 - x1), int(y2 - y1))),
     )
+    object.__setattr__(self, "affine_matrix", affine_matrix)
 
 
 @dataclasses.dataclass
@@ -58,6 +67,10 @@ class UpscaleFaceInfo:
   landmarks5: typing.Optional[typing.List[typing.List[float]]] = None
   eye_ellipse: typing.Optional[Ellipse] = None
   strong_change_mask: typing.Optional[np.ndarray] = None
+  debug_original_crop: typing.Optional[np.ndarray] = None
+  debug_helper_crop: typing.Optional[np.ndarray] = None
+  debug_transformed_face: typing.Optional[np.ndarray] = None
+  debug_pasted_face: typing.Optional[np.ndarray] = None
 
   def visualize(
     self,
@@ -165,6 +178,9 @@ class UpscaleParams:
 
   # CodeFormer knob (lower => stronger reconstruction; good for low-res)
   codeformer_fidelity: float = 0.30
+
+  # include debug crops in UpscaleFaceInfo
+  fill_debug_images: bool = False
 
 
 class Upscaler(object):
@@ -291,6 +307,7 @@ class Upscaler(object):
           gfpgan_weight_small=float(params.gfpgan_weight_small),
           codeformer_fidelity=float(params.codeformer_fidelity),
           enable_codeformer=False,
+          fill_debug_images=bool(params.fill_debug_images),
           info=result_info,
         )
 
@@ -308,6 +325,7 @@ class Upscaler(object):
           gfpgan_weight_small=float(params.gfpgan_weight_small),
           codeformer_fidelity=float(params.codeformer_fidelity),
           enable_codeformer=True,
+          fill_debug_images=bool(params.fill_debug_images),
           info=result_info,
         )
 
@@ -348,6 +366,7 @@ class Upscaler(object):
       only_center_face=only_center_face,
       eye_dist_threshold=5,
     )
+    helper.align_warp_face()
 
     print(
       f"XX1 len(det_faces) = {len(helper.det_faces)}, " +
@@ -355,18 +374,18 @@ class Upscaler(object):
       f"len(cropped_faces) = {len(helper.cropped_faces)}"
     )
     det_faces = getattr(helper, "det_faces", [])
+    affine_matrices = getattr(helper, "affine_matrices", [])
     aligned_faces: typing.List[FaceDetection] = []
     h, w = img_bgr.shape[:2]
-    for bb in det_faces:
+    for i, bb in enumerate(det_faces):
       x1, y1, x2, y2 = bb[:4]
       bbox_px = [int(x1), int(y1), int(x2), int(y2)]
       aligned_faces.append(FaceDetection(
         bbox_px=bbox_px,
         width=w,
         height=h,
+        affine_matrix=affine_matrices[i] if i < len(affine_matrices) else None,
       ))
-
-    helper.align_warp_face()
     return aligned_faces
 
   def _create_face_helper(self) -> facexlib.utils.face_restoration_helper.FaceRestoreHelper:
@@ -525,6 +544,7 @@ class Upscaler(object):
     gfpgan_weight_small: float,
     codeformer_fidelity: float,
     enable_codeformer: bool,
+    fill_debug_images: bool,
     info: UpscaleInfo,
   ) -> typing.Tuple[np.ndarray, UpscaleInfo]:
 
@@ -591,7 +611,22 @@ class Upscaler(object):
       oy1 = max(0, min(oy1, orig_h))
       oy2 = max(0, min(oy2, orig_h))
       original_crop = None
-      if ox2 > ox1 and oy2 > oy1:
+      if face_detection.affine_matrix is not None and face_crop.size:
+        matrix_for_original = np.asarray(face_detection.affine_matrix, dtype=np.float32).copy()
+        sx = float(up_w) / float(orig_w) if orig_w else 1.0
+        sy = float(up_h) / float(orig_h) if orig_h else 1.0
+        matrix_for_original[0, 0] *= sx
+        matrix_for_original[0, 1] *= sy
+        matrix_for_original[1, 0] *= sx
+        matrix_for_original[1, 1] *= sy
+        original_crop = cv2.warpAffine(
+          original_bgr,
+          matrix_for_original,
+          (face_crop.shape[1], face_crop.shape[0]),
+          flags=cv2.INTER_LINEAR,
+          borderMode=cv2.BORDER_REFLECT_101,
+        )
+      elif ox2 > ox1 and oy2 > oy1:
         original_crop = original_bgr[oy1:oy2, ox1:ox2].copy()
         if original_crop.size and original_crop.shape[:2] != face_crop.shape[:2]:
           original_crop = cv2.resize(
@@ -647,6 +682,13 @@ class Upscaler(object):
 
       if local_restored_faces:
         restored_faces.extend([self._cv2_ready_bgr(x) for x in local_restored_faces])
+        if fill_debug_images:
+          face_info.debug_transformed_face = self._cv2_ready_bgr(local_restored_faces[0]).copy()
+
+      if fill_debug_images:
+        face_info.debug_helper_crop = self._cv2_ready_bgr(face_crop).copy()
+        if original_crop is not None:
+          face_info.debug_original_crop = self._cv2_ready_bgr(original_crop).copy()
 
       face_infos.append(face_info)
 
@@ -657,8 +699,46 @@ class Upscaler(object):
 
     #result_info = info.copy().update({'faces': face_infos})
     #print(f"XXX P4, result_info = {str(result_info)}")
+    pasted = helper.paste_faces_to_input_image(upsample_img=None)
+
+    if fill_debug_images:
+      for i, face_info in enumerate(face_infos):
+        if i >= len(faces):
+          continue
+        detection = faces[i]
+        crop_w = 0
+        crop_h = 0
+        if i < len(helper.cropped_faces):
+          crop_h, crop_w = helper.cropped_faces[i].shape[:2]
+        elif face_info.debug_transformed_face is not None:
+          crop_h, crop_w = face_info.debug_transformed_face.shape[:2]
+        elif face_info.debug_original_crop is not None:
+          crop_h, crop_w = face_info.debug_original_crop.shape[:2]
+
+        if detection.affine_matrix is not None and crop_w > 0 and crop_h > 0:
+          face_info.debug_pasted_face = cv2.warpAffine(
+            pasted,
+            detection.affine_matrix,
+            (crop_w, crop_h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_REFLECT_101,
+          )
+          continue
+
+        bbox_norm = detection.bbox_norm
+        px1 = int(round(bbox_norm[0] * up_w))
+        py1 = int(round(bbox_norm[1] * up_h))
+        px2 = int(round(bbox_norm[2] * up_w))
+        py2 = int(round(bbox_norm[3] * up_h))
+        px1 = max(0, min(px1, up_w))
+        px2 = max(0, min(px2, up_w))
+        py1 = max(0, min(py1, up_h))
+        py2 = max(0, min(py2, up_h))
+        if px2 > px1 and py2 > py1:
+          face_info.debug_pasted_face = pasted[py1:py2, px1:px2].copy()
+
     return (
-      helper.paste_faces_to_input_image(upsample_img=None),
+      pasted,
       dataclasses.replace(info, faces=face_infos),
     )
 

@@ -16,6 +16,54 @@ class ProcessFile:
   output_file: pathlib.Path
 
 
+def _resize_to_height(image: typing.Optional[typing.Any], target_h: int):
+  if image is None:
+    return None
+  if getattr(image, "size", 0) == 0:
+    return None
+  if image.shape[0] == target_h:
+    return image
+  new_w = max(1, int(round(image.shape[1] * target_h / image.shape[0])))
+  return cv2.resize(image, (new_w, target_h), interpolation=cv2.INTER_AREA)
+
+
+def _with_label(image: typing.Optional[typing.Any], label: str) -> typing.Optional[typing.Any]:
+  if image is None:
+    return None
+  if getattr(image, "size", 0) == 0:
+    return None
+
+  strip_h = 28
+  labeled = cv2.copyMakeBorder(
+    image,
+    0,
+    strip_h,
+    0,
+    0,
+    borderType=cv2.BORDER_CONSTANT,
+    value=(255, 255, 255),
+  )
+
+  baseline = 0
+  font = cv2.FONT_HERSHEY_SIMPLEX
+  text_scale = 0.5
+  text_thickness = 1
+  text_size, baseline = cv2.getTextSize(label, font, text_scale, text_thickness)
+  text_x = max(4, (labeled.shape[1] - text_size[0]) // 2)
+  text_y = image.shape[0] + max(16, (strip_h + text_size[1]) // 2)
+  cv2.putText(
+    labeled,
+    label,
+    (text_x, text_y),
+    font,
+    text_scale,
+    (20, 20, 20),
+    text_thickness,
+    cv2.LINE_AA,
+  )
+  return labeled
+
+
 async def main(
   files: typing.List[ProcessFile],
   use_codeformer: bool = True,
@@ -36,6 +84,7 @@ async def main(
       upscaler.UpscaleParams(
         outscale=outscale,
         codeformer_fidelity=codeformer_fidelity,
+        fill_debug_images=bool(output_faces),
       )
     )
 
@@ -45,33 +94,38 @@ async def main(
     if output_faces:
       os.makedirs(output_faces, exist_ok=True)
       for idx, face_info in enumerate(upscale_info.faces):
-        orig_face = face_info.visualize(img)
-        up_face = face_info.visualize(out)
-        eye_mask = face_info.get_eye_mask(width=img.shape[1], height=img.shape[0])
-        if orig_face.size == 0 or up_face.size == 0 or eye_mask.size == 0:
+        orig_face = face_info.debug_original_crop
+        helper_face = face_info.debug_helper_crop
+        transformed_face = face_info.debug_transformed_face
+        pasted_face = face_info.debug_pasted_face
+
+        if orig_face is None:
+          orig_face = face_info.visualize(img)
+        if pasted_face is None:
+          pasted_face = face_info.visualize(out)
+
+        collage_parts = [
+          (orig_face, "original crop"),
+          (helper_face, "helper crop on upscaled"),
+          (transformed_face, "codeformer transformed"),
+          (pasted_face, "pasted result"),
+        ]
+
+        valid_parts = [(face, label) for face, label in collage_parts if face is not None and face.size]
+        if not valid_parts:
           continue
-        if eye_mask.shape[0] != img.shape[0] or eye_mask.shape[1] != img.shape[1]:
+
+        target_h = max(face.shape[0] for face, _ in valid_parts)
+        resized_faces = []
+        for face, label in valid_parts:
+          prepared = _resize_to_height(face, target_h)
+          prepared = _with_label(prepared, label)
+          if prepared is not None:
+            resized_faces.append(prepared)
+        if not resized_faces:
           continue
-        eye_region = cv2.bitwise_and(img, img, mask=eye_mask)
-        ys, xs = (eye_mask > 0).nonzero()
-        if ys.size == 0 or xs.size == 0:
-          continue
-        y1, y2 = int(ys.min()), int(ys.max()) + 1
-        x1, x2 = int(xs.min()), int(xs.max()) + 1
-        eye_face = eye_region[y1:y2, x1:x2].copy()
-        if eye_face.size == 0:
-          continue
-        target_h = max(orig_face.shape[0], up_face.shape[0], eye_face.shape[0])
-        if orig_face.shape[0] != target_h:
-          new_w = max(1, int(round(orig_face.shape[1] * target_h / orig_face.shape[0])))
-          orig_face = cv2.resize(orig_face, (new_w, target_h), interpolation=cv2.INTER_AREA)
-        if up_face.shape[0] != target_h:
-          new_w = max(1, int(round(up_face.shape[1] * target_h / up_face.shape[0])))
-          up_face = cv2.resize(up_face, (new_w, target_h), interpolation=cv2.INTER_AREA)
-        if eye_face.shape[0] != target_h:
-          new_w = max(1, int(round(eye_face.shape[1] * target_h / eye_face.shape[0])))
-          eye_face = cv2.resize(eye_face, (new_w, target_h), interpolation=cv2.INTER_AREA)
-        face_img = cv2.hconcat([orig_face, up_face, eye_face])
+
+        face_img = cv2.hconcat(resized_faces)
         face_path = os.path.join(output_faces, f"face_{idx}.png")
         cv2.imwrite(face_path, face_img)
 
