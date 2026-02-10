@@ -83,6 +83,8 @@ async def main(
   codeformer_fidelity=0.3,
   output_faces: str = None,
   outscale: float = 4.0,
+  diff_thr: float = 18.0,
+  diff_min_area: int = 80,
 ):
   upscalerr = upscaler.Upscaler(
     realesrgan_weights="RealESRGAN_x4plus.pth",
@@ -98,6 +100,8 @@ async def main(
         outscale=outscale,
         codeformer_fidelity=codeformer_fidelity,
         fill_debug_images=bool(output_faces),
+        diff_thr=diff_thr,
+        diff_min_area=diff_min_area,
       )
     )
 
@@ -117,6 +121,13 @@ async def main(
         helper_face = face_info.debug_helper_crop
         transformed_face = face_info.debug_transformed_face
         pasted_face = face_info.debug_pasted_face
+        diff_mask = face_info.strong_change_mask
+        diff_mask_color = face_info.strong_change_mask_color
+
+        if diff_mask is not None and len(diff_mask.shape) == 2:
+          diff_mask = cv2.cvtColor(diff_mask, cv2.COLOR_GRAY2BGR)
+        if diff_mask_color is not None and len(diff_mask_color.shape) == 2:
+          diff_mask_color = cv2.cvtColor(diff_mask_color, cv2.COLOR_GRAY2BGR)
 
         if orig_face is None:
           orig_face = face_info.visualize(img)
@@ -127,6 +138,8 @@ async def main(
           (orig_face, "original crop"),
           (helper_face, "helper crop on upscaled"),
           (transformed_face, str(face_info.algorithm) + " transformed"),
+          (diff_mask, "diff mask luma"),
+          (diff_mask_color, "diff mask color sum"),
           (pasted_face, "pasted result"),
         ]
 
@@ -179,6 +192,8 @@ if __name__ == "__main__":
   parser.add_argument('--no-codeformer', dest='use_codeformer', action='store_false')
   parser.add_argument("--output-faces", type=str, default=None)
   parser.add_argument('--outscale', type=float, default=4.0)
+  parser.add_argument('--diff-thr', type=float, default=10.0)
+  parser.add_argument('--diff-min-area', type=int, default=15)
   parser.set_defaults(use_codeformer=True)
   args = parser.parse_args()
 
@@ -209,5 +224,7 @@ if __name__ == "__main__":
       codeformer_fidelity=args.codeformer_fidelity,
       output_faces=args.output_faces,
       outscale=args.outscale,
+      diff_thr=args.diff_thr,
+      diff_min_area=args.diff_min_area,
     )
   )

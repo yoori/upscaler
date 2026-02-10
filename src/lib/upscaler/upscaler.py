@@ -67,6 +67,7 @@ class UpscaleFaceInfo:
   landmarks5: typing.Optional[typing.List[typing.List[float]]] = None
   eye_ellipse: typing.Optional[Ellipse] = None
   strong_change_mask: typing.Optional[np.ndarray] = None
+  strong_change_mask_color: typing.Optional[np.ndarray] = None
   debug_original_crop: typing.Optional[np.ndarray] = None
   debug_helper_crop: typing.Optional[np.ndarray] = None
   debug_transformed_face: typing.Optional[np.ndarray] = None
@@ -181,6 +182,10 @@ class UpscaleParams:
 
   # include debug crops in UpscaleFaceInfo
   fill_debug_images: bool = False
+
+  # diff-mask controls for per-face debug masks
+  diff_thr: float = 10.0
+  diff_min_area: int = 15
 
 
 class Upscaler(object):
@@ -308,6 +313,8 @@ class Upscaler(object):
           codeformer_fidelity=float(params.codeformer_fidelity),
           enable_codeformer=False,
           fill_debug_images=bool(params.fill_debug_images),
+          diff_thr=float(params.diff_thr),
+          diff_min_area=int(params.diff_min_area),
           info=result_info,
         )
 
@@ -326,6 +333,8 @@ class Upscaler(object):
           codeformer_fidelity=float(params.codeformer_fidelity),
           enable_codeformer=True,
           fill_debug_images=bool(params.fill_debug_images),
+          diff_thr=float(params.diff_thr),
+          diff_min_area=int(params.diff_min_area),
           info=result_info,
         )
 
@@ -540,6 +549,8 @@ class Upscaler(object):
     codeformer_fidelity: float,
     enable_codeformer: bool,
     fill_debug_images: bool,
+    diff_thr: float,
+    diff_min_area: int,
     info: UpscaleInfo,
   ) -> typing.Tuple[np.ndarray, UpscaleInfo]:
 
@@ -640,7 +651,6 @@ class Upscaler(object):
           face_crop_for_codeformer,
           fidelity=codeformer_fidelity,
         )
-        face_info.strong_change_mask = diff_mask
         self._debug_save_codeformer(
           face_crop_bgr=face_crop_for_codeformer,
           restored_bgr=result_face,
@@ -667,6 +677,27 @@ class Upscaler(object):
 
       if local_restored_faces:
         restored_faces.extend([self._cv2_ready_bgr(x) for x in local_restored_faces])
+
+        source_face_for_diff = self._cv2_ready_bgr(face_crop)
+        if face_info.algorithm == "codeformer" and original_crop is not None:
+          source_face_for_diff = self._cv2_ready_bgr(original_crop)
+
+        restored_for_diff = self._cv2_ready_bgr(local_restored_faces[0])
+        if source_face_for_diff.shape[:2] != restored_for_diff.shape[:2]:
+          restored_for_diff = cv2.resize(
+            restored_for_diff,
+            (source_face_for_diff.shape[1], source_face_for_diff.shape[0]),
+            interpolation=cv2.INTER_LINEAR,
+          )
+        diff_result = self._diff_zones_mean_window(
+          source_face_for_diff,
+          restored_for_diff,
+          win=3,
+          diff_thr=float(diff_thr),
+          min_area=int(diff_min_area),
+        )
+        face_info.strong_change_mask = diff_result["mask_u8"]
+        face_info.strong_change_mask_color = diff_result["mask_color_u8"]
         if fill_debug_images:
           face_info.debug_transformed_face = self._cv2_ready_bgr(local_restored_faces[0]).copy()
 
@@ -792,15 +823,9 @@ class Upscaler(object):
     min_area: int = 80,
   ) -> typing.Dict[str, typing.Any]:
     """
-    Find zones where img1 deviates from img0 significantly, after averaging (box/gaussian) over a window.
+    Find zones where img1 deviates from img0 significantly, after averaging over a window.
 
-    - img0_bgr, img1_bgr: uint8 BGR images of same size (face crops)
-    - win: window size (odd recommended). Larger => more "semantic" difference, less sensitivity to noise.
-    - diff_thr: threshold in L-channel units (0..255). Typical start: 12..25.
-    - min_area: remove tiny blobs in the final mask.
-
-    Returns dict with:
-      diff_mean (float32), mask01 (float32 0..1), mask_u8 (uint8 0/255), boxes (list of [x1,y1,x2,y2])
+    Returns both intensity-based and summed-color masks.
     """
 
     if img0_bgr is None or img1_bgr is None:
@@ -812,14 +837,17 @@ class Upscaler(object):
     if img0_bgr.dtype != np.uint8 or img1_bgr.dtype != np.uint8:
       raise ValueError(f"Expected uint8, got {img0_bgr.dtype} / {img1_bgr.dtype}")
 
-    # 1) Use perceptual luminance: Lab L channel
+    # 1) Luminance difference (Lab L)
     lab0 = cv2.cvtColor(img0_bgr, cv2.COLOR_BGR2LAB)
     lab1 = cv2.cvtColor(img1_bgr, cv2.COLOR_BGR2LAB)
     L0 = lab0[:, :, 0].astype(np.float32)
     L1 = lab1[:, :, 0].astype(np.float32)
-
-    # 2) Per-pixel absolute difference
     d = np.abs(L1 - L0)  # 0..255 float32
+
+    # 2) Summed color deviation across all BGR channels (normalized to 0..255)
+    bgr0 = img0_bgr.astype(np.float32)
+    bgr1 = img1_bgr.astype(np.float32)
+    d_color = np.abs(bgr1 - bgr0).sum(axis=2) / 3.0
 
     # 3) Local averaging over window
     k = int(win)
@@ -828,43 +856,47 @@ class Upscaler(object):
     if (k % 2) == 0:
       k += 1
 
-    # box filter is fast and matches "усреднение по окну"
     diff_mean = cv2.blur(d, (k, k))
+    diff_color_mean = cv2.blur(d_color, (k, k))
 
     # 4) Threshold -> mask
     mask01 = (diff_mean >= float(diff_thr)).astype(np.float32)
+    mask_color01 = (diff_color_mean >= float(diff_thr)).astype(np.float32)
 
-    # 5) Clean mask (optional but usually needed)
-    # remove small noise with opening, then fill small gaps with closing
-    if k >= 5:
-      kk = 3
-    else:
-      kk = 3
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kk, kk))
-    mask_u8 = (mask01 * 255.0).astype(np.uint8)
-    mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_OPEN, kernel, iterations=1)
-    mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, kernel, iterations=1)
+    # 5) Clean mask + remove tiny components
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 
-    # 6) Remove tiny components
-    boxes: typing.List[typing.List[int]] = []
-    if int(min_area) > 0:
-      num, labels, stats, _ = cv2.connectedComponentsWithStats((mask_u8 > 0).astype(np.uint8), connectivity=8)
-      cleaned = np.zeros_like(mask_u8)
-      for i in range(1, num):
-        x, y, w, h, area = stats[i]
-        if int(area) >= int(min_area):
-          cleaned[labels == i] = 255
-          boxes.append([int(x), int(y), int(x + w), int(y + h)])
-      mask_u8 = cleaned
+    def _clean(mask01_local: np.ndarray) -> typing.Tuple[np.ndarray, typing.List[typing.List[int]]]:
+      mask_u8_local = (mask01_local * 255.0).astype(np.uint8)
+      mask_u8_local = cv2.morphologyEx(mask_u8_local, cv2.MORPH_OPEN, kernel, iterations=1)
+      mask_u8_local = cv2.morphologyEx(mask_u8_local, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-    mask01 = (mask_u8.astype(np.float32) / 255.0)
+      boxes_local: typing.List[typing.List[int]] = []
+      if int(min_area) > 0:
+        num, labels, stats, _ = cv2.connectedComponentsWithStats((mask_u8_local > 0).astype(np.uint8), connectivity=8)
+        cleaned = np.zeros_like(mask_u8_local)
+        for idx in range(1, num):
+          x, y, w, h, area = stats[idx]
+          if int(area) >= int(min_area):
+            cleaned[labels == idx] = 255
+            boxes_local.append([int(x), int(y), int(x + w), int(y + h)])
+        mask_u8_local = cleaned
+      return mask_u8_local, boxes_local
+
+    mask_u8, boxes = _clean(mask01)
+    mask_color_u8, boxes_color = _clean(mask_color01)
 
     return {
       "diff_mean": diff_mean,
-      "mask01": mask01,
+      "diff_color_mean": diff_color_mean,
+      "mask01": (mask_u8.astype(np.float32) / 255.0),
+      "mask_color01": (mask_color_u8.astype(np.float32) / 255.0),
       "mask_u8": mask_u8,
+      "mask_color_u8": mask_color_u8,
       "boxes": boxes,
+      "boxes_color": boxes_color,
       "d": d,
+      "d_color": d_color,
     }
 
   def _strong_change_mask_mean_window(
