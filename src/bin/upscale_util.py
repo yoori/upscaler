@@ -107,7 +107,7 @@ async def main(
         collage_parts = [
           (orig_face, "original crop"),
           (helper_face, "helper crop on upscaled"),
-          (transformed_face, "codeformer transformed"),
+          (transformed_face, str(face_info.algorithm) + " transformed"),
           (pasted_face, "pasted result"),
         ]
 
