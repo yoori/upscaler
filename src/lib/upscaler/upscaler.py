@@ -390,6 +390,20 @@ class UpscaleParams:
   diff_min_area: int = 15
 
 
+@dataclasses.dataclass(frozen=True)
+class DiffZonesMeanWindowResult:
+  diff_mean: np.ndarray
+  diff_color_mean: np.ndarray
+  mask01: np.ndarray
+  mask_color01: np.ndarray
+  mask_u8: np.ndarray
+  mask_color_u8: np.ndarray
+  boxes: typing.List[typing.List[int]]
+  boxes_color: typing.List[typing.List[int]]
+  d: np.ndarray
+  d_color: np.ndarray
+
+
 class Upscaler(object):
 
   class Exception(Exception):
@@ -1004,8 +1018,8 @@ class Upscaler(object):
           diff_thr=float(diff_thr),
           min_area=int(diff_min_area),
         )
-        face_info.strong_change_mask = diff_result["mask_u8"]
-        face_info.strong_change_mask_color = diff_result["mask_color_u8"]
+        face_info.strong_change_mask = diff_result.mask_u8
+        face_info.strong_change_mask_color = diff_result.mask_color_u8
         face_info.face_crop_shape = (
           int(source_face_for_diff.shape[0]),
           int(source_face_for_diff.shape[1]),
@@ -1123,7 +1137,7 @@ class Upscaler(object):
 
     d = self._diff_zones_mean_window(face_crop_bgr, bgr, win=3)
 
-    return bgr, d['mask_u8'], d['d']
+    return bgr, d.mask_u8, d.d
 
   def _diff_zones_mean_window(
     self,
@@ -1133,7 +1147,7 @@ class Upscaler(object):
     win: int = 21,
     diff_thr: float = 18.0,
     min_area: int = 80,
-  ) -> typing.Dict[str, typing.Any]:
+  ) -> DiffZonesMeanWindowResult:
     """
     Find zones where img1 deviates from img0 significantly, after averaging over a window.
 
@@ -1203,18 +1217,18 @@ class Upscaler(object):
     mask_u8, boxes = _clean(mask01)
     mask_color_u8, boxes_color = _clean(mask_color01)
 
-    return {
-      "diff_mean": diff_mean,
-      "diff_color_mean": diff_color_mean,
-      "mask01": (mask_u8.astype(np.float32) / 255.0),
-      "mask_color01": (mask_color_u8.astype(np.float32) / 255.0),
-      "mask_u8": mask_u8,
-      "mask_color_u8": mask_color_u8,
-      "boxes": boxes,
-      "boxes_color": boxes_color,
-      "d": d,
-      "d_color": d_color,
-    }
+    return DiffZonesMeanWindowResult(
+      diff_mean=diff_mean,
+      diff_color_mean=diff_color_mean,
+      mask01=(mask_u8.astype(np.float32) / 255.0),
+      mask_color01=(mask_color_u8.astype(np.float32) / 255.0),
+      mask_u8=mask_u8,
+      mask_color_u8=mask_color_u8,
+      boxes=boxes,
+      boxes_color=boxes_color,
+      d=d,
+      d_color=d_color,
+    )
 
   def _strong_change_mask_mean_window(
     self,
