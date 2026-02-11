@@ -76,14 +76,6 @@ class UpscaleFaceInfo:
   eye_ellipse: typing.Optional[Ellipse] = None
   eye_ellipse_face_crop: typing.Optional[Ellipse] = None
   mouth_ellipse_face_crop: typing.Optional[Ellipse] = None
-  strong_change_mask: typing.Optional[np.ndarray] = None
-  strong_change_mask_color: typing.Optional[np.ndarray] = None
-  rollback_mask: typing.Optional[np.ndarray] = None
-  face_crop_shape: typing.Optional[typing.Tuple[int, int]] = None
-  debug_original_crop: typing.Optional[np.ndarray] = None
-  debug_helper_crop: typing.Optional[np.ndarray] = None
-  debug_transformed_face: typing.Optional[np.ndarray] = None
-  debug_pasted_face: typing.Optional[np.ndarray] = None
   steps: typing.List[UpscaleFaceInfoStep] = dataclasses.field(default_factory=list)
 
   def visualize(
@@ -167,21 +159,36 @@ class UpscaleFaceInfo:
     cv2.ellipse(mask, center_px, axes_px, float(self.eye_ellipse.angle), 0, 360, 255, -1)
     return mask
 
-  def _resolve_face_crop_shape(self) -> typing.Tuple[int, int]:
-    if self.strong_change_mask is not None and self.strong_change_mask.size:
-      return int(self.strong_change_mask.shape[0]), int(self.strong_change_mask.shape[1])
-    if self.strong_change_mask_color is not None and self.strong_change_mask_color.size:
-      return int(self.strong_change_mask_color.shape[0]), int(self.strong_change_mask_color.shape[1])
-    if self.face_crop_shape is not None:
-      return int(self.face_crop_shape[0]), int(self.face_crop_shape[1])
+  @staticmethod
+  def _resolve_face_crop_shape(
+    strong_change_mask: typing.Optional[np.ndarray],
+    strong_change_mask_color: typing.Optional[np.ndarray],
+    face_crop_shape: typing.Optional[typing.Tuple[int, int]],
+  ) -> typing.Tuple[int, int]:
+    if strong_change_mask is not None and strong_change_mask.size:
+      return int(strong_change_mask.shape[0]), int(strong_change_mask.shape[1])
+    if strong_change_mask_color is not None and strong_change_mask_color.size:
+      return int(strong_change_mask_color.shape[0]), int(strong_change_mask_color.shape[1])
+    if face_crop_shape is not None:
+      return int(face_crop_shape[0]), int(face_crop_shape[1])
     return 0, 0
 
-  def get_eye_mask_for_face_crop(self) -> np.ndarray:
+  def get_eye_mask_for_face_crop(
+    self,
+    *,
+    strong_change_mask: typing.Optional[np.ndarray],
+    strong_change_mask_color: typing.Optional[np.ndarray],
+    face_crop_shape: typing.Optional[typing.Tuple[int, int]],
+  ) -> np.ndarray:
     """
     Return a binary (0/255) eye mask in local face-crop coordinates.
     Shape matches face crop / strong-change masks.
     """
-    height, width = self._resolve_face_crop_shape()
+    height, width = self._resolve_face_crop_shape(
+      strong_change_mask=strong_change_mask,
+      strong_change_mask_color=strong_change_mask_color,
+      face_crop_shape=face_crop_shape,
+    )
     if width <= 0 or height <= 0:
       return np.zeros((0, 0), dtype=np.uint8)
 
@@ -237,14 +244,34 @@ class UpscaleFaceInfo:
     cv2.ellipse(mask, center_px, axes_px, float(ellipse.angle), 0, 360, 255, -1)
     return mask
 
-  def get_mouth_mask_for_face_crop(self) -> np.ndarray:
-    height, width = self._resolve_face_crop_shape()
+  def get_mouth_mask_for_face_crop(
+    self,
+    *,
+    strong_change_mask: typing.Optional[np.ndarray],
+    strong_change_mask_color: typing.Optional[np.ndarray],
+    face_crop_shape: typing.Optional[typing.Tuple[int, int]],
+  ) -> np.ndarray:
+    height, width = self._resolve_face_crop_shape(
+      strong_change_mask=strong_change_mask,
+      strong_change_mask_color=strong_change_mask_color,
+      face_crop_shape=face_crop_shape,
+    )
     if width <= 0 or height <= 0:
       return np.zeros((0, 0), dtype=np.uint8)
     return self._render_face_crop_ellipse_mask(self.mouth_ellipse_face_crop, width=width, height=height)
 
-  def get_nose_zone_mask_for_face_crop(self) -> np.ndarray:
-    height, width = self._resolve_face_crop_shape()
+  def get_nose_zone_mask_for_face_crop(
+    self,
+    *,
+    strong_change_mask: typing.Optional[np.ndarray],
+    strong_change_mask_color: typing.Optional[np.ndarray],
+    face_crop_shape: typing.Optional[typing.Tuple[int, int]],
+  ) -> np.ndarray:
+    height, width = self._resolve_face_crop_shape(
+      strong_change_mask=strong_change_mask,
+      strong_change_mask_color=strong_change_mask_color,
+      face_crop_shape=face_crop_shape,
+    )
     if width <= 0 or height <= 0:
       return np.zeros((0, 0), dtype=np.uint8)
 
@@ -320,20 +347,42 @@ class UpscaleFaceInfo:
 
     return mask
 
-  def get_full_face_mask(self) -> np.ndarray:
+  def get_full_face_mask(
+    self,
+    *,
+    strong_change_mask: typing.Optional[np.ndarray],
+    strong_change_mask_color: typing.Optional[np.ndarray],
+    face_crop_shape: typing.Optional[typing.Tuple[int, int]],
+  ) -> np.ndarray:
     """
     Build full face-zone mask for rollback:
     eye OR mouth OR nose-zone masks.
     """
-    height, width = self._resolve_face_crop_shape()
+    height, width = self._resolve_face_crop_shape(
+      strong_change_mask=strong_change_mask,
+      strong_change_mask_color=strong_change_mask_color,
+      face_crop_shape=face_crop_shape,
+    )
     if width <= 0 or height <= 0:
       return np.zeros((0, 0), dtype=np.uint8)
 
     full_face_mask = np.zeros((height, width), dtype=np.uint8)
     for mask in (
-      self.get_eye_mask_for_face_crop(),
-      self.get_mouth_mask_for_face_crop(),
-      self.get_nose_zone_mask_for_face_crop(),
+      self.get_eye_mask_for_face_crop(
+        strong_change_mask=strong_change_mask,
+        strong_change_mask_color=strong_change_mask_color,
+        face_crop_shape=face_crop_shape,
+      ),
+      self.get_mouth_mask_for_face_crop(
+        strong_change_mask=strong_change_mask,
+        strong_change_mask_color=strong_change_mask_color,
+        face_crop_shape=face_crop_shape,
+      ),
+      self.get_nose_zone_mask_for_face_crop(
+        strong_change_mask=strong_change_mask,
+        strong_change_mask_color=strong_change_mask_color,
+        face_crop_shape=face_crop_shape,
+      ),
     ):
       if mask is None or mask.size == 0:
         continue
@@ -346,17 +395,32 @@ class UpscaleFaceInfo:
 
     return full_face_mask
 
-  def get_full_rollback_mask(self, diff_opening_window: float) -> np.ndarray:
+  def get_full_rollback_mask(
+    self,
+    *,
+    strong_change_mask: typing.Optional[np.ndarray],
+    strong_change_mask_color: typing.Optional[np.ndarray],
+    face_crop_shape: typing.Optional[typing.Tuple[int, int]],
+    diff_opening_window: float,
+  ) -> np.ndarray:
     """
     Build face rollback mask:
     (strong_change_mask OR strong_change_mask_color), then MORPH_OPEN with
     kernel width = face_crop_width * diff_opening_window.
     """
-    height, width = self._resolve_face_crop_shape()
+    height, width = self._resolve_face_crop_shape(
+      strong_change_mask=strong_change_mask,
+      strong_change_mask_color=strong_change_mask_color,
+      face_crop_shape=face_crop_shape,
+    )
     if width <= 0 or height <= 0:
       return np.zeros((0, 0), dtype=np.uint8)
 
-    rollback_mask = self.get_face_rollback_mask_before_opening()
+    rollback_mask = self.get_face_rollback_mask_before_opening(
+      strong_change_mask=strong_change_mask,
+      strong_change_mask_color=strong_change_mask_color,
+      face_crop_shape=face_crop_shape,
+    )
 
     if np.count_nonzero(rollback_mask) == 0:
       return rollback_mask
@@ -369,16 +433,32 @@ class UpscaleFaceInfo:
 
     return rollback_mask
 
-  def get_face_rollback_mask(self, diff_opening_window: float) -> np.ndarray:
+  def get_face_rollback_mask(
+    self,
+    *,
+    strong_change_mask: typing.Optional[np.ndarray],
+    strong_change_mask_color: typing.Optional[np.ndarray],
+    face_crop_shape: typing.Optional[typing.Tuple[int, int]],
+    diff_opening_window: float,
+  ) -> np.ndarray:
     """
     Build effective rollback mask limited to face regions:
     get_full_rollback_mask AND get_full_face_mask.
     """
-    full_rollback_mask = self.get_full_rollback_mask(diff_opening_window=diff_opening_window)
+    full_rollback_mask = self.get_full_rollback_mask(
+      strong_change_mask=strong_change_mask,
+      strong_change_mask_color=strong_change_mask_color,
+      face_crop_shape=face_crop_shape,
+      diff_opening_window=diff_opening_window,
+    )
     if full_rollback_mask is None or full_rollback_mask.size == 0:
       return np.zeros((0, 0), dtype=np.uint8)
 
-    full_face_mask = self.get_full_face_mask()
+    full_face_mask = self.get_full_face_mask(
+      strong_change_mask=strong_change_mask,
+      strong_change_mask_color=strong_change_mask_color,
+      face_crop_shape=face_crop_shape,
+    )
     if full_face_mask is None or full_face_mask.size == 0:
       return np.zeros(full_rollback_mask.shape[:2], dtype=np.uint8)
     if full_face_mask.shape[:2] != full_rollback_mask.shape[:2]:
@@ -393,17 +473,27 @@ class UpscaleFaceInfo:
       (full_face_mask > 0).astype(np.uint8) * 255,
     )
 
-  def get_face_rollback_mask_before_opening(self) -> np.ndarray:
+  def get_face_rollback_mask_before_opening(
+    self,
+    *,
+    strong_change_mask: typing.Optional[np.ndarray],
+    strong_change_mask_color: typing.Optional[np.ndarray],
+    face_crop_shape: typing.Optional[typing.Tuple[int, int]],
+  ) -> np.ndarray:
     """
     Build union mask before opening:
     strong_change_mask OR strong_change_mask_color.
     """
-    height, width = self._resolve_face_crop_shape()
+    height, width = self._resolve_face_crop_shape(
+      strong_change_mask=strong_change_mask,
+      strong_change_mask_color=strong_change_mask_color,
+      face_crop_shape=face_crop_shape,
+    )
     if width <= 0 or height <= 0:
       return np.zeros((0, 0), dtype=np.uint8)
 
     rollback_mask = np.zeros((height, width), dtype=np.uint8)
-    for mask in (self.strong_change_mask, self.strong_change_mask_color):
+    for mask in (strong_change_mask, strong_change_mask_color):
       if mask is None or mask.size == 0:
         continue
       local_mask = mask
@@ -926,6 +1016,7 @@ class Upscaler(object):
 
     restored_faces: typing.List[np.ndarray] = []
     face_infos: typing.List[UpscaleFaceInfo] = []
+    debug_crop_shapes: typing.List[typing.Tuple[int, int]] = []
 
     up_h, up_w = upscaled_bgr.shape[:2]
     orig_h, orig_w = original_bgr.shape[:2]
@@ -1044,13 +1135,17 @@ class Upscaler(object):
         eye_ellipse=eye_ellipse,
         eye_ellipse_face_crop=eye_ellipse_face_crop,
         mouth_ellipse_face_crop=mouth_ellipse_face_crop,
-        face_crop_shape=(
-          int(face_crop.shape[0]),
-          int(face_crop.shape[1])
-        ) if face_crop is not None and face_crop.size else None,
       )
 
       crop_on_upscaled = self._cv2_ready_bgr(face_crop) if face_crop is not None and face_crop.size else None
+      strong_change_mask: typing.Optional[np.ndarray] = None
+      strong_change_mask_color: typing.Optional[np.ndarray] = None
+      face_crop_shape = (
+        (int(crop_on_upscaled.shape[0]), int(crop_on_upscaled.shape[1]))
+        if crop_on_upscaled is not None and crop_on_upscaled.size else None
+      )
+      debug_transformed_face: typing.Optional[np.ndarray] = None
+      debug_original_crop: typing.Optional[np.ndarray] = None
       if fill_debug_images:
         if original_crop is not None:
           self._append_face_step(face_info, name="original crop", image=original_crop)
@@ -1109,22 +1204,36 @@ class Upscaler(object):
             diff_thr=float(diff_thr),
             min_area_ratio=float(diff_min_area),
           )
-          face_info.strong_change_mask = diff_result.mask_u8
-          face_info.strong_change_mask_color = diff_result.mask_color_u8
-          face_info.face_crop_shape = (
+          strong_change_mask = diff_result.mask_u8
+          strong_change_mask_color = diff_result.mask_color_u8
+          face_crop_shape = (
             int(crop_on_upscaled.shape[0]),
             int(crop_on_upscaled.shape[1]),
           )
 
           rollback_mask = face_info.get_face_rollback_mask(
+            strong_change_mask=strong_change_mask,
+            strong_change_mask_color=strong_change_mask_color,
+            face_crop_shape=face_crop_shape,
             diff_opening_window=float(diff_opening_window),
           )
-          face_info.rollback_mask = rollback_mask
 
           if fill_debug_images:
-            eye_mask = face_info.get_eye_mask_for_face_crop()
-            mouth_mask = face_info.get_mouth_mask_for_face_crop()
-            nose_zone_mask = face_info.get_nose_zone_mask_for_face_crop()
+            eye_mask = face_info.get_eye_mask_for_face_crop(
+              strong_change_mask=strong_change_mask,
+              strong_change_mask_color=strong_change_mask_color,
+              face_crop_shape=face_crop_shape,
+            )
+            mouth_mask = face_info.get_mouth_mask_for_face_crop(
+              strong_change_mask=strong_change_mask,
+              strong_change_mask_color=strong_change_mask_color,
+              face_crop_shape=face_crop_shape,
+            )
+            nose_zone_mask = face_info.get_nose_zone_mask_for_face_crop(
+              strong_change_mask=strong_change_mask,
+              strong_change_mask_color=strong_change_mask_color,
+              face_crop_shape=face_crop_shape,
+            )
             face_masks_overlay = self._build_face_masks_overlay(
               base_image=gfpgan_face,
               eye_mask=eye_mask,
@@ -1135,7 +1244,11 @@ class Upscaler(object):
             self._append_face_step(
               face_info,
               name="rollback mask before opening",
-              image=face_info.get_face_rollback_mask_before_opening(),
+              image=face_info.get_face_rollback_mask_before_opening(
+                strong_change_mask=strong_change_mask,
+                strong_change_mask_color=strong_change_mask_color,
+                face_crop_shape=face_crop_shape,
+              ),
             )
             self._append_face_step(face_info, name="rollback mask", image=rollback_mask)
 
@@ -1175,19 +1288,26 @@ class Upscaler(object):
           diff_thr=float(diff_thr),
           min_area_ratio=float(diff_min_area),
         )
-        face_info.strong_change_mask = diff_result.mask_u8
-        face_info.strong_change_mask_color = diff_result.mask_color_u8
-        face_info.face_crop_shape = (
+        strong_change_mask = diff_result.mask_u8
+        strong_change_mask_color = diff_result.mask_color_u8
+        face_crop_shape = (
           int(source_face_for_diff.shape[0]),
           int(source_face_for_diff.shape[1]),
         )
         if fill_debug_images:
-          face_info.debug_transformed_face = self._cv2_ready_bgr(local_restored_faces[0]).copy()
+          debug_transformed_face = self._cv2_ready_bgr(local_restored_faces[0]).copy()
 
-      if fill_debug_images:
-        face_info.debug_helper_crop = self._cv2_ready_bgr(face_crop).copy()
-        if original_crop is not None:
-          face_info.debug_original_crop = self._cv2_ready_bgr(original_crop).copy()
+      if fill_debug_images and original_crop is not None:
+        debug_original_crop = self._cv2_ready_bgr(original_crop).copy()
+
+      debug_crop_shape = (0, 0)
+      if debug_transformed_face is not None:
+        debug_crop_shape = debug_transformed_face.shape[:2]
+      elif debug_original_crop is not None:
+        debug_crop_shape = debug_original_crop.shape[:2]
+      elif face_crop is not None and face_crop.size:
+        debug_crop_shape = face_crop.shape[:2]
+      debug_crop_shapes.append((int(debug_crop_shape[0]), int(debug_crop_shape[1])))
 
       face_infos.append(face_info)
 
@@ -1209,20 +1329,18 @@ class Upscaler(object):
         crop_h = 0
         if i < len(helper.cropped_faces):
           crop_h, crop_w = helper.cropped_faces[i].shape[:2]
-        elif face_info.debug_transformed_face is not None:
-          crop_h, crop_w = face_info.debug_transformed_face.shape[:2]
-        elif face_info.debug_original_crop is not None:
-          crop_h, crop_w = face_info.debug_original_crop.shape[:2]
+        elif i < len(debug_crop_shapes):
+          crop_h, crop_w = debug_crop_shapes[i]
 
         if detection.affine_matrix is not None and crop_w > 0 and crop_h > 0:
-          face_info.debug_pasted_face = cv2.warpAffine(
+          pasted_face = cv2.warpAffine(
             pasted,
             detection.affine_matrix,
             (crop_w, crop_h),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_REFLECT_101,
           )
-          self._append_face_step(face_info, name="result", image=face_info.debug_pasted_face)
+          self._append_face_step(face_info, name="result", image=pasted_face)
           continue
 
         bbox_norm = detection.bbox_norm
@@ -1235,8 +1353,8 @@ class Upscaler(object):
         py1 = max(0, min(py1, up_h))
         py2 = max(0, min(py2, up_h))
         if px2 > px1 and py2 > py1:
-          face_info.debug_pasted_face = pasted[py1:py2, px1:px2].copy()
-          self._append_face_step(face_info, name="result", image=face_info.debug_pasted_face)
+          pasted_face = pasted[py1:py2, px1:px2].copy()
+          self._append_face_step(face_info, name="result", image=pasted_face)
 
     return (
       pasted,
