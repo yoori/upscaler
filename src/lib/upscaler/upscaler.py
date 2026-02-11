@@ -14,7 +14,7 @@ import facexlib.utils.face_restoration_helper
 import codeformer.basicsr.archs.codeformer_arch
 
 
-FaceMode = typing.Literal["off", "gfpgan", "auto_per_face", "auto_per_face_cf"]
+FaceMode = typing.Literal["off", "gfpgan", "auto_per_face"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -60,6 +60,12 @@ class FaceDetection:
 
 
 @dataclasses.dataclass
+class UpscaleFaceInfoStep:
+  name: str
+  image: typing.Optional[np.ndarray] = None
+
+
+@dataclasses.dataclass
 class UpscaleFaceInfo:
   bbox: typing.List[float]
   face_px: int
@@ -72,11 +78,13 @@ class UpscaleFaceInfo:
   mouth_ellipse_face_crop: typing.Optional[Ellipse] = None
   strong_change_mask: typing.Optional[np.ndarray] = None
   strong_change_mask_color: typing.Optional[np.ndarray] = None
+  rollback_mask: typing.Optional[np.ndarray] = None
   face_crop_shape: typing.Optional[typing.Tuple[int, int]] = None
   debug_original_crop: typing.Optional[np.ndarray] = None
   debug_helper_crop: typing.Optional[np.ndarray] = None
   debug_transformed_face: typing.Optional[np.ndarray] = None
   debug_pasted_face: typing.Optional[np.ndarray] = None
+  steps: typing.List[UpscaleFaceInfoStep] = dataclasses.field(default_factory=list)
 
   def visualize(
     self,
@@ -235,7 +243,7 @@ class UpscaleFaceInfo:
       return np.zeros((0, 0), dtype=np.uint8)
     return self._render_face_crop_ellipse_mask(self.mouth_ellipse_face_crop, width=width, height=height)
 
-  def get_eye_mouth_polygon_mask_for_face_crop(self) -> np.ndarray:
+  def get_nose_zone_mask_for_face_crop(self) -> np.ndarray:
     height, width = self._resolve_face_crop_shape()
     if width <= 0 or height <= 0:
       return np.zeros((0, 0), dtype=np.uint8)
@@ -312,7 +320,33 @@ class UpscaleFaceInfo:
 
     return mask
 
-  def get_face_rollback_mask(self, diff_opening_window: float) -> np.ndarray:
+  def get_full_face_mask(self) -> np.ndarray:
+    """
+    Build full face-zone mask for rollback:
+    eye OR mouth OR nose-zone masks.
+    """
+    height, width = self._resolve_face_crop_shape()
+    if width <= 0 or height <= 0:
+      return np.zeros((0, 0), dtype=np.uint8)
+
+    full_face_mask = np.zeros((height, width), dtype=np.uint8)
+    for mask in (
+      self.get_eye_mask_for_face_crop(),
+      self.get_mouth_mask_for_face_crop(),
+      self.get_nose_zone_mask_for_face_crop(),
+    ):
+      if mask is None or mask.size == 0:
+        continue
+      local_mask = mask
+      if local_mask.ndim == 3:
+        local_mask = cv2.cvtColor(local_mask, cv2.COLOR_BGR2GRAY)
+      if local_mask.shape[:2] != (height, width):
+        local_mask = cv2.resize(local_mask, (width, height), interpolation=cv2.INTER_NEAREST)
+      full_face_mask = cv2.bitwise_or(full_face_mask, (local_mask > 0).astype(np.uint8) * 255)
+
+    return full_face_mask
+
+  def get_full_rollback_mask(self, diff_opening_window: float) -> np.ndarray:
     """
     Build face rollback mask:
     (strong_change_mask OR strong_change_mask_color), then MORPH_OPEN with
@@ -334,6 +368,30 @@ class UpscaleFaceInfo:
     rollback_mask = cv2.morphologyEx(rollback_mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
     return rollback_mask
+
+  def get_face_rollback_mask(self, diff_opening_window: float) -> np.ndarray:
+    """
+    Build effective rollback mask limited to face regions:
+    get_full_rollback_mask AND get_full_face_mask.
+    """
+    full_rollback_mask = self.get_full_rollback_mask(diff_opening_window=diff_opening_window)
+    if full_rollback_mask is None or full_rollback_mask.size == 0:
+      return np.zeros((0, 0), dtype=np.uint8)
+
+    full_face_mask = self.get_full_face_mask()
+    if full_face_mask is None or full_face_mask.size == 0:
+      return np.zeros(full_rollback_mask.shape[:2], dtype=np.uint8)
+    if full_face_mask.shape[:2] != full_rollback_mask.shape[:2]:
+      full_face_mask = cv2.resize(
+        full_face_mask,
+        (full_rollback_mask.shape[1], full_rollback_mask.shape[0]),
+        interpolation=cv2.INTER_NEAREST,
+      )
+
+    return cv2.bitwise_and(
+      (full_rollback_mask > 0).astype(np.uint8) * 255,
+      (full_face_mask > 0).astype(np.uint8) * 255,
+    )
 
   def get_face_rollback_mask_before_opening(self) -> np.ndarray:
     """
@@ -369,7 +427,7 @@ class UpscaleParams:
   outscale: float = 4.0
   tile: int = 0
 
-  face_mode: FaceMode = "auto_per_face_cf"
+  face_mode: FaceMode = "auto_per_face"
   only_center_face: bool = False
 
   # per-face threshold on ORIGINAL image (min(w,h) in px)
@@ -390,6 +448,8 @@ class UpscaleParams:
   diff_thr: float = (10.0 / 255.0)
   # minimal connected-component area as a fraction of face crop area in [0, 1]
   diff_min_area: float = 0.0003
+  # opening window size for rollback mask as fraction of face crop width
+  diff_opening_window: float = 0.03
 
 
 @dataclasses.dataclass(frozen=True)
@@ -517,27 +577,6 @@ class Upscaler(object):
         )
 
       elif params.face_mode == "auto_per_face":
-        if self._face_enhancer is None:
-          raise Upscaler.Exception("auto_per_face requires GFPGAN weights")
-
-        return self._apply_faces_routed(
-          original_bgr=img_bgr,
-          upscaled_bgr=up_bgr,
-          min_face_px=int(params.min_face_px),
-          only_center_face=bool(params.only_center_face),
-          # routing: small->gfpgan(weight_small), big->gfpgan(weight_normal)
-          gfpgan_weight_normal=float(params.gfpgan_weight),
-          gfpgan_weight_small=float(params.gfpgan_weight_small),
-          codeformer_fidelity=float(params.codeformer_fidelity),
-          enable_codeformer=False,
-          fill_debug_images=bool(params.fill_debug_images),
-          diff_thr=float(params.diff_thr),
-          diff_min_area=float(params.diff_min_area),
-          info=result_info,
-        )
-
-      elif params.face_mode == "auto_per_face_cf":
-        # small -> CodeFormer (if available), else fallback to GFPGAN small weight
         if self._face_enhancer is None and self._codeformer_net is None:
           return (up_bgr, result_info)
 
@@ -546,13 +585,16 @@ class Upscaler(object):
           upscaled_bgr=up_bgr,
           min_face_px=int(params.min_face_px),
           only_center_face=bool(params.only_center_face),
+          # routing: small->codeformer (if configured), else GFPGAN(weight_small)
+          # large->GFPGAN(weight_normal)
           gfpgan_weight_normal=float(params.gfpgan_weight),
           gfpgan_weight_small=float(params.gfpgan_weight_small),
           codeformer_fidelity=float(params.codeformer_fidelity),
-          enable_codeformer=True,
+          enable_codeformer=(self._codeformer_net is not None),
           fill_debug_images=bool(params.fill_debug_images),
           diff_thr=float(params.diff_thr),
           diff_min_area=float(params.diff_min_area),
+          diff_opening_window=float(params.diff_opening_window),
           info=result_info,
         )
 
@@ -650,6 +692,51 @@ class Upscaler(object):
       img = np.ascontiguousarray(img)
 
     return img
+
+  def _append_face_step(
+    self,
+    face_info: UpscaleFaceInfo,
+    *,
+    name: str,
+    image: typing.Optional[np.ndarray],
+  ) -> None:
+    if image is None or getattr(image, "size", 0) == 0:
+      return
+    face_info.steps.append(UpscaleFaceInfoStep(name=name, image=self._cv2_ready_bgr(image).copy()))
+
+  def _build_face_masks_overlay(
+    self,
+    *,
+    base_image: typing.Optional[np.ndarray],
+    eye_mask: typing.Optional[np.ndarray],
+    mouth_mask: typing.Optional[np.ndarray],
+    nose_zone_mask: typing.Optional[np.ndarray],
+  ) -> typing.Optional[np.ndarray]:
+    if base_image is None or getattr(base_image, "size", 0) == 0:
+      return None
+    out = self._cv2_ready_bgr(base_image).copy()
+
+    def _apply(mask: typing.Optional[np.ndarray], color: typing.Tuple[int, int, int], alpha: float) -> None:
+      nonlocal out
+      if mask is None or getattr(mask, "size", 0) == 0:
+        return
+      local_mask = mask
+      if local_mask.ndim == 3:
+        local_mask = cv2.cvtColor(local_mask, cv2.COLOR_BGR2GRAY)
+      if local_mask.shape[:2] != out.shape[:2]:
+        local_mask = cv2.resize(local_mask, (out.shape[1], out.shape[0]), interpolation=cv2.INTER_NEAREST)
+      mask_bool = local_mask > 0
+      if not np.any(mask_bool):
+        return
+      overlay = np.zeros_like(out)
+      overlay[:, :] = color
+      blended = cv2.addWeighted(out, 1.0 - alpha, overlay, alpha, 0)
+      out[mask_bool] = blended[mask_bool]
+
+    _apply(eye_mask, (0, 255, 0), 0.36)
+    _apply(mouth_mask, (0, 165, 255), 0.36)
+    _apply(nose_zone_mask, (255, 255, 0), 0.30)
+    return out
 
   def _create_face_oval_mask(
     self,
@@ -810,6 +897,7 @@ class Upscaler(object):
     fill_debug_images: bool,
     diff_thr: float,
     diff_min_area: float,
+    diff_opening_window: float,
     info: UpscaleInfo,
   ) -> typing.Tuple[np.ndarray, UpscaleInfo]:
 
@@ -962,6 +1050,13 @@ class Upscaler(object):
         ) if face_crop is not None and face_crop.size else None,
       )
 
+      crop_on_upscaled = self._cv2_ready_bgr(face_crop) if face_crop is not None and face_crop.size else None
+      if fill_debug_images:
+        if original_crop is not None:
+          self._append_face_step(face_info, name="original crop", image=original_crop)
+        if crop_on_upscaled is not None:
+          self._append_face_step(face_info, name="original upscaled", image=crop_on_upscaled)
+
       if (
         enable_codeformer and
         self._codeformer_net is not None and
@@ -994,6 +1089,66 @@ class Upscaler(object):
           paste_back=False,
           weight=w,
         )
+        if local_restored_faces:
+          gfpgan_face = self._cv2_ready_bgr(local_restored_faces[0])
+          if fill_debug_images:
+            self._append_face_step(face_info, name="gfpgan transformed", image=gfpgan_face)
+          if crop_on_upscaled is None:
+            crop_on_upscaled = self._cv2_ready_bgr(face_crop)
+          if gfpgan_face.shape[:2] != crop_on_upscaled.shape[:2]:
+            crop_on_upscaled = cv2.resize(
+              crop_on_upscaled,
+              (gfpgan_face.shape[1], gfpgan_face.shape[0]),
+              interpolation=cv2.INTER_LINEAR,
+            )
+
+          diff_result = self._diff_zones_mean_window(
+            crop_on_upscaled,
+            gfpgan_face,
+            win=3,
+            diff_thr=float(diff_thr),
+            min_area_ratio=float(diff_min_area),
+          )
+          face_info.strong_change_mask = diff_result.mask_u8
+          face_info.strong_change_mask_color = diff_result.mask_color_u8
+          face_info.face_crop_shape = (
+            int(crop_on_upscaled.shape[0]),
+            int(crop_on_upscaled.shape[1]),
+          )
+
+          rollback_mask = face_info.get_face_rollback_mask(
+            diff_opening_window=float(diff_opening_window),
+          )
+          face_info.rollback_mask = rollback_mask
+
+          if fill_debug_images:
+            eye_mask = face_info.get_eye_mask_for_face_crop()
+            mouth_mask = face_info.get_mouth_mask_for_face_crop()
+            nose_zone_mask = face_info.get_nose_zone_mask_for_face_crop()
+            face_masks_overlay = self._build_face_masks_overlay(
+              base_image=gfpgan_face,
+              eye_mask=eye_mask,
+              mouth_mask=mouth_mask,
+              nose_zone_mask=nose_zone_mask,
+            )
+            self._append_face_step(face_info, name="face masks", image=face_masks_overlay)
+            self._append_face_step(
+              face_info,
+              name="rollback mask before opening",
+              image=face_info.get_face_rollback_mask_before_opening(),
+            )
+            self._append_face_step(face_info, name="rollback mask", image=rollback_mask)
+
+          if rollback_mask is not None and rollback_mask.size:
+            rollback_mask01 = (rollback_mask > 0).astype(np.uint8)
+            gfpgan_face = np.where(
+              rollback_mask01[:, :, None] > 0,
+              crop_on_upscaled,
+              gfpgan_face,
+            )
+          if fill_debug_images:
+            self._append_face_step(face_info, name="rollback result", image=gfpgan_face)
+          local_restored_faces = [gfpgan_face]
       else:
         # fallback
         face_info.algorithm = "fallback"
@@ -1067,6 +1222,7 @@ class Upscaler(object):
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_REFLECT_101,
           )
+          self._append_face_step(face_info, name="result", image=face_info.debug_pasted_face)
           continue
 
         bbox_norm = detection.bbox_norm
@@ -1080,6 +1236,7 @@ class Upscaler(object):
         py2 = max(0, min(py2, up_h))
         if px2 > px1 and py2 > py1:
           face_info.debug_pasted_face = pasted[py1:py2, px1:px2].copy()
+          self._append_face_step(face_info, name="result", image=face_info.debug_pasted_face)
 
     return (
       pasted,

@@ -202,6 +202,7 @@ async def main(
         fill_debug_images=bool(output_faces),
         diff_thr=diff_thr,
         diff_min_area=diff_min_area,
+        diff_opening_window=diff_opening_window,
       )
     )
 
@@ -217,121 +218,15 @@ async def main(
     if output_faces:
       os.makedirs(output_faces, exist_ok=True)
       for idx, face_info in enumerate(upscale_info.faces):
-        orig_face = face_info.debug_original_crop
-        helper_face = face_info.debug_helper_crop
-        transformed_face = face_info.debug_transformed_face
-        pasted_face = face_info.debug_pasted_face
-        diff_mask = face_info.strong_change_mask
-        diff_mask_color = face_info.strong_change_mask_color
-        mask_source = diff_mask
-        if mask_source is None:
-          mask_source = diff_mask_color
-        if mask_source is None:
-          mask_source = transformed_face
-        if mask_source is None:
-          mask_source = helper_face
-        if mask_source is None:
-          mask_source = orig_face
+        collage_parts = []
+        for step in face_info.steps:
+          if step is None:
+            continue
+          collage_parts.append((step.image, step.name))
 
-        eye_mask = None
-        mouth_mask = None
-        polygon_mask = None
-        if mask_source is not None and getattr(mask_source, "size", 0):
-          eye_mask = face_info.get_eye_mask_for_face_crop()
-          mouth_mask = face_info.get_mouth_mask_for_face_crop()
-          polygon_mask = face_info.get_eye_mouth_polygon_mask_for_face_crop()
-
-        rollback_mask_before_opening = face_info.get_face_rollback_mask_before_opening()
-        rollback_mask = face_info.get_face_rollback_mask(diff_opening_window=diff_opening_window)
-        rollback_mask_before_opening_preview = rollback_mask_before_opening
-        if (rollback_mask_before_opening_preview is not None and
-          getattr(rollback_mask_before_opening_preview, "size", 0) and
-          len(rollback_mask_before_opening_preview.shape) == 2
-        ):
-          rollback_mask_before_opening_preview = cv2.cvtColor(
-            rollback_mask_before_opening_preview,
-            cv2.COLOR_GRAY2BGR
-          )
-        rollback_mask_preview = rollback_mask
-        if (rollback_mask_preview is not None and getattr(rollback_mask_preview, "size", 0) and
-          len(rollback_mask_preview.shape) == 2
-        ):
-          rollback_mask_preview = cv2.cvtColor(rollback_mask_preview, cv2.COLOR_GRAY2BGR)
-        strong_change_face_masks = None
-        if rollback_mask is not None and getattr(rollback_mask, "size", 0):
-          strong_change_face_masks = np.zeros((rollback_mask.shape[0], rollback_mask.shape[1], 3), dtype=np.uint8)
-          rollback_eye_mask = None
-          rollback_mouth_mask = None
-          rollback_polygon_mask = None
-          if (eye_mask is not None and getattr(eye_mask, "size", 0) and
-            eye_mask.shape[:2] == rollback_mask.shape[:2]
-          ):
-            rollback_eye_mask = cv2.bitwise_and(rollback_mask, eye_mask)
-          if (mouth_mask is not None and getattr(mouth_mask, "size", 0) and
-            mouth_mask.shape[:2] == rollback_mask.shape[:2]
-          ):
-            rollback_mouth_mask = cv2.bitwise_and(rollback_mask, mouth_mask)
-          if (polygon_mask is not None and getattr(polygon_mask, "size", 0) and
-            polygon_mask.shape[:2] == rollback_mask.shape[:2]
-          ):
-            rollback_polygon_mask = cv2.bitwise_and(rollback_mask, polygon_mask)
-          strong_change_face_masks = _overlay_mask(
-            strong_change_face_masks,
-            rollback_eye_mask,
-            color=(0, 255, 0),
-            alpha=0.95,
-          )
-          strong_change_face_masks = _overlay_mask(
-            strong_change_face_masks,
-            rollback_mouth_mask,
-            color=(0, 165, 255),
-            alpha=0.95,
-          )
-          strong_change_face_masks = _overlay_mask(
-            strong_change_face_masks,
-            rollback_polygon_mask,
-            color=(255, 255, 0),
-            alpha=0.95,
-          )
-
-        face_masks_overlay_source = transformed_face
-        if face_masks_overlay_source is None:
-          face_masks_overlay_source = helper_face
-        if face_masks_overlay_source is None:
-          face_masks_overlay_source = orig_face
-        face_masks_overlay = _overlay_mask(face_masks_overlay_source, eye_mask, color=(0, 255, 0), alpha=0.36)
-        face_masks_overlay = _overlay_mask(face_masks_overlay, mouth_mask, color=(0, 165, 255), alpha=0.36)
-        face_masks_overlay = _overlay_mask(face_masks_overlay, polygon_mask, color=(255, 255, 0), alpha=0.30)
-        landmarks_for_mask_overlay = face_info.landmarks_all_face_crop
-        if landmarks_for_mask_overlay is None and face_info.landmarks_all is not None:
-          x1_f, y1_f, x2_f, y2_f = [float(v) for v in face_info.bbox]
-          box_w = max(1e-8, x2_f - x1_f)
-          box_h = max(1e-8, y2_f - y1_f)
-          landmarks_for_mask_overlay = [
-            [
-              (float(point[0]) - x1_f) / box_w,
-              (float(point[1]) - y1_f) / box_h,
-            ]
-            for point in face_info.landmarks_all
-            if point is not None and len(point) >= 2
-          ]
-        face_masks_overlay = _draw_landmark_crosses(face_masks_overlay, landmarks_for_mask_overlay)
-
-        if orig_face is None:
-          orig_face = face_info.visualize(img)
-        if pasted_face is None:
-          pasted_face = face_info.visualize(out)
-
-        collage_parts = [
-          (orig_face, "original crop"),
-          (helper_face, "helper crop on upscaled"),
-          (transformed_face, str(face_info.algorithm) + " transformed"),
-          (rollback_mask_before_opening_preview, "rollback mask before opening"),
-          (rollback_mask_preview, "rollback mask"),
-          (face_masks_overlay, "face masks"),
-          (strong_change_face_masks, "strong change eye mask"),
-          (pasted_face, "pasted result"),
-        ]
+        if not collage_parts:
+          fallback = face_info.visualize(out)
+          collage_parts = [(fallback, "result")]
 
         valid_parts = [(face, label) for face, label in collage_parts if face is not None and face.size]
         if not valid_parts:

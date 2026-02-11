@@ -109,7 +109,7 @@ async def upscale(
   params = upscaler.UpscaleParams(
     outscale=outscale,
     tile=tile,
-    face_mode=("auto_per_face_cf" if face else "off"),
+    face_mode=("auto_per_face" if face else "off"),
   )
 
   try:
@@ -150,7 +150,7 @@ async def upscale_batch(
   params = upscaler.UpscaleParams(
     outscale=outscale,
     tile=tile,
-    face_mode=("auto_per_face_cf" if face else "off"),
+    face_mode=("auto_per_face" if face else "off"),
   )
 
   with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
