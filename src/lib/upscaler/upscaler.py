@@ -386,7 +386,8 @@ class UpscaleParams:
   fill_debug_images: bool = False
 
   # diff-mask controls for per-face debug masks
-  diff_thr: float = 10.0
+  # normalized threshold in [0, 1]
+  diff_thr: float = (10.0 / 255.0)
   diff_min_area: int = 15
 
 
@@ -1145,7 +1146,7 @@ class Upscaler(object):
     img1_bgr: np.ndarray,
     *,
     win: int = 21,
-    diff_thr: float = 18.0,
+    diff_thr: float = (18.0 / 255.0),
     min_area: int = 80,
   ) -> DiffZonesMeanWindowResult:
     """
@@ -1186,8 +1187,9 @@ class Upscaler(object):
     diff_color_mean = cv2.blur(d_color, (k, k))
 
     # 4) Threshold -> mask
-    mask01 = (diff_mean >= float(diff_thr)).astype(np.float32)
-    mask_color01 = (diff_color_mean >= float(diff_thr)).astype(np.float32)
+    diff_thr_u8 = float(np.clip(float(diff_thr), 0.0, 1.0) * 255.0)
+    mask01 = (diff_mean >= diff_thr_u8).astype(np.float32)
+    mask_color01 = (diff_color_mean >= diff_thr_u8).astype(np.float32)
 
     # 5) Clean mask + remove tiny components
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -1243,7 +1245,7 @@ class Upscaler(object):
 
     - img0_bgr, img1_bgr: input images (any size, will be resized to img0)
     - win: window size for averaging (odd recommended, min 1)
-    - diff_thr: threshold in 0..255 mean absolute color units
+    - diff_thr: normalized threshold in [0, 1]
     """
     if img0_bgr is None or img1_bgr is None:
       raise ValueError("img0_bgr/img1_bgr is None")
@@ -1271,7 +1273,8 @@ class Upscaler(object):
     diff = np.abs(other_mean - base_mean)
     diff_mean = diff.mean(axis=2)
 
-    mask_u8 = (diff_mean >= float(diff_thr)).astype(np.uint8) * 255
+    diff_thr_u8 = float(np.clip(float(diff_thr), 0.0, 1.0) * 255.0)
+    mask_u8 = (diff_mean >= diff_thr_u8).astype(np.uint8) * 255
     return mask_u8
 
   def _debug_save_codeformer(

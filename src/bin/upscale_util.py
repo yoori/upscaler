@@ -77,6 +77,42 @@ def _with_label(image: typing.Optional[typing.Any], label: str) -> typing.Option
   return labeled
 
 
+def _with_header(image: typing.Optional[typing.Any], header: str) -> typing.Optional[typing.Any]:
+  if image is None:
+    return None
+  if getattr(image, "size", 0) == 0:
+    return None
+
+  strip_h = 34
+  out = cv2.copyMakeBorder(
+    image,
+    strip_h,
+    0,
+    0,
+    0,
+    borderType=cv2.BORDER_CONSTANT,
+    value=(245, 245, 245),
+  )
+
+  font = cv2.FONT_HERSHEY_SIMPLEX
+  text_scale = 0.55
+  text_thickness = 1
+  text_size, _ = cv2.getTextSize(header, font, text_scale, text_thickness)
+  text_x = max(8, (out.shape[1] - text_size[0]) // 2)
+  text_y = max(22, (strip_h + text_size[1]) // 2)
+  cv2.putText(
+    out,
+    header,
+    (text_x, text_y),
+    font,
+    text_scale,
+    (20, 20, 20),
+    text_thickness,
+    cv2.LINE_AA,
+  )
+  return out
+
+
 def _overlay_mask(
   image: typing.Optional[np.ndarray],
   mask: typing.Optional[np.ndarray],
@@ -146,7 +182,7 @@ async def main(
   codeformer_fidelity=0.3,
   output_faces: str = None,
   outscale: float = 4.0,
-  diff_thr: float = 18.0,
+  diff_thr: float = (10.0 / 255.0),
   diff_min_area: int = 80,
   diff_opening_window: float = 0.007,
 ):
@@ -313,6 +349,13 @@ async def main(
           continue
 
         face_img = cv2.hconcat(resized_faces)
+        collage_params = (
+          f"outscale={float(outscale):g}; "
+          f"diff_opening_window={float(diff_opening_window):g}; "
+          f"diff_thr={float(diff_thr):g}; "
+          f"diff_min_area={int(diff_min_area)}"
+        )
+        face_img = _with_header(face_img, collage_params)
         face_path = os.path.join(output_faces, f"face_{idx}.png")
         cv2.imwrite(face_path, face_img)
 
@@ -347,7 +390,7 @@ if __name__ == "__main__":
   parser.add_argument('--no-codeformer', dest='use_codeformer', action='store_false')
   parser.add_argument("--output-faces", type=str, default=None)
   parser.add_argument('--outscale', type=float, default=4.0)
-  parser.add_argument('--diff-thr', type=float, default=10.0)
+  parser.add_argument('--diff-thr', type=float, default=(10.0 / 255.0), help='Normalized threshold in [0, 1]')
   parser.add_argument('--diff-min-area', type=int, default=15)
   parser.add_argument('--diff-opening-window', type=float, default=0.007)
   parser.set_defaults(use_codeformer=True)
