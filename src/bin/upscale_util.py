@@ -77,6 +77,69 @@ def _with_label(image: typing.Optional[typing.Any], label: str) -> typing.Option
   return labeled
 
 
+def _overlay_mask(
+  image: typing.Optional[np.ndarray],
+  mask: typing.Optional[np.ndarray],
+  *,
+  color: typing.Tuple[int, int, int] = (0, 255, 0),
+  alpha: float = 0.45,
+) -> typing.Optional[np.ndarray]:
+  if image is None or getattr(image, "size", 0) == 0:
+    return None
+  if mask is None or getattr(mask, "size", 0) == 0:
+    return image
+
+  base = image.copy()
+  if base.ndim == 2:
+    base = cv2.cvtColor(base, cv2.COLOR_GRAY2BGR)
+  elif base.ndim == 3 and base.shape[2] == 4:
+    base = cv2.cvtColor(base, cv2.COLOR_BGRA2BGR)
+
+  mono_mask = mask
+  if mono_mask.ndim == 3:
+    mono_mask = cv2.cvtColor(mono_mask, cv2.COLOR_BGR2GRAY)
+
+  if mono_mask.shape[:2] != base.shape[:2]:
+    mono_mask = cv2.resize(mono_mask, (base.shape[1], base.shape[0]), interpolation=cv2.INTER_NEAREST)
+
+  mask_bool = mono_mask > 0
+  if not np.any(mask_bool):
+    return base
+
+  overlay = np.zeros_like(base)
+  overlay[:, :] = color
+  blended = cv2.addWeighted(base, 1.0 - alpha, overlay, alpha, 0)
+  base[mask_bool] = blended[mask_bool]
+  return base
+
+
+def _draw_landmark_crosses(
+  image: typing.Optional[np.ndarray],
+  points_norm: typing.Optional[typing.List[typing.List[float]]],
+  *,
+  color: typing.Tuple[int, int, int] = (0, 0, 255),
+  arm: int = 4,
+  thickness: int = 1,
+) -> typing.Optional[np.ndarray]:
+  if image is None or getattr(image, "size", 0) == 0:
+    return image
+  if not points_norm:
+    return image
+
+  out = image.copy()
+  h, w = out.shape[:2]
+  for point in points_norm:
+    if not point or len(point) < 2:
+      continue
+    x = int(round(float(point[0]) * w))
+    y = int(round(float(point[1]) * h))
+    if x < 0 or x >= w or y < 0 or y >= h:
+      continue
+    cv2.line(out, (x - arm, y), (x + arm, y), color, thickness, cv2.LINE_AA)
+    cv2.line(out, (x, y - arm), (x, y + arm), color, thickness, cv2.LINE_AA)
+  return out
+
+
 async def main(
   files: typing.List[ProcessFile],
   use_codeformer: bool = True,
@@ -123,11 +186,50 @@ async def main(
         pasted_face = face_info.debug_pasted_face
         diff_mask = face_info.strong_change_mask
         diff_mask_color = face_info.strong_change_mask_color
+        strong_change_eye_mask = face_info.strong_change_eye_mask
 
+        mask_source = diff_mask
+        if mask_source is None:
+          mask_source = diff_mask_color
+        if mask_source is None:
+          mask_source = transformed_face
+        if mask_source is None:
+          mask_source = helper_face
+        if mask_source is None:
+          mask_source = orig_face
+
+        eye_mask = None
+        if mask_source is not None and getattr(mask_source, "size", 0):
+          eye_mask = face_info.get_eye_mask_for_face_crop()
+
+        if strong_change_eye_mask is None and eye_mask is not None and getattr(eye_mask, "size", 0):
+          strong_change_eye_mask = face_info.get_strong_change_eye_mask()
         if diff_mask is not None and len(diff_mask.shape) == 2:
           diff_mask = cv2.cvtColor(diff_mask, cv2.COLOR_GRAY2BGR)
         if diff_mask_color is not None and len(diff_mask_color.shape) == 2:
           diff_mask_color = cv2.cvtColor(diff_mask_color, cv2.COLOR_GRAY2BGR)
+        if strong_change_eye_mask is not None and len(strong_change_eye_mask.shape) == 2:
+          strong_change_eye_mask = cv2.cvtColor(strong_change_eye_mask, cv2.COLOR_GRAY2BGR)
+        eye_overlay_source = transformed_face
+        if eye_overlay_source is None:
+          eye_overlay_source = helper_face
+        if eye_overlay_source is None:
+          eye_overlay_source = orig_face
+        eye_mask_overlay = _overlay_mask(eye_overlay_source, eye_mask)
+        landmarks_for_eye_overlay = face_info.landmarks_all_face_crop
+        if landmarks_for_eye_overlay is None and face_info.landmarks_all is not None:
+          x1_f, y1_f, x2_f, y2_f = [float(v) for v in face_info.bbox]
+          box_w = max(1e-8, x2_f - x1_f)
+          box_h = max(1e-8, y2_f - y1_f)
+          landmarks_for_eye_overlay = [
+            [
+              (float(point[0]) - x1_f) / box_w,
+              (float(point[1]) - y1_f) / box_h,
+            ]
+            for point in face_info.landmarks_all
+            if point is not None and len(point) >= 2
+          ]
+        eye_mask_overlay = _draw_landmark_crosses(eye_mask_overlay, landmarks_for_eye_overlay)
 
         if orig_face is None:
           orig_face = face_info.visualize(img)
@@ -140,6 +242,8 @@ async def main(
           (transformed_face, str(face_info.algorithm) + " transformed"),
           (diff_mask, "diff mask luma"),
           (diff_mask_color, "diff mask color sum"),
+          (eye_mask_overlay, "eye mask"),
+          (strong_change_eye_mask, "strong change eye mask"),
           (pasted_face, "pasted result"),
         ]
 
@@ -151,7 +255,8 @@ async def main(
         resized_faces = []
         for face, label in valid_parts:
           prepared = _resize_to_height(face, target_h)
-          prepared = _with_label(prepared, label)
+          source_h, source_w = face.shape[:2]
+          prepared = _with_label(prepared, f"{label} ({source_w}x{source_h})")
           if prepared is not None:
             resized_faces.append(prepared)
         if not resized_faces:

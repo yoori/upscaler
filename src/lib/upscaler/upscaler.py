@@ -65,9 +65,14 @@ class UpscaleFaceInfo:
   face_px: int
   algorithm: str
   landmarks5: typing.Optional[typing.List[typing.List[float]]] = None
+  landmarks_all: typing.Optional[typing.List[typing.List[float]]] = None
+  landmarks_all_face_crop: typing.Optional[typing.List[typing.List[float]]] = None
   eye_ellipse: typing.Optional[Ellipse] = None
+  eye_ellipse_face_crop: typing.Optional[Ellipse] = None
   strong_change_mask: typing.Optional[np.ndarray] = None
   strong_change_mask_color: typing.Optional[np.ndarray] = None
+  strong_change_eye_mask: typing.Optional[np.ndarray] = None
+  face_crop_shape: typing.Optional[typing.Tuple[int, int]] = None
   debug_original_crop: typing.Optional[np.ndarray] = None
   debug_helper_crop: typing.Optional[np.ndarray] = None
   debug_transformed_face: typing.Optional[np.ndarray] = None
@@ -153,6 +158,90 @@ class UpscaleFaceInfo:
     axes_px = (max(1, int(round(ax))), max(1, int(round(ay))))
     cv2.ellipse(mask, center_px, axes_px, float(self.eye_ellipse.angle), 0, 360, 255, -1)
     return mask
+
+  def _resolve_face_crop_shape(self) -> typing.Tuple[int, int]:
+    if self.strong_change_mask is not None and self.strong_change_mask.size:
+      return int(self.strong_change_mask.shape[0]), int(self.strong_change_mask.shape[1])
+    if self.strong_change_mask_color is not None and self.strong_change_mask_color.size:
+      return int(self.strong_change_mask_color.shape[0]), int(self.strong_change_mask_color.shape[1])
+    if self.face_crop_shape is not None:
+      return int(self.face_crop_shape[0]), int(self.face_crop_shape[1])
+    return 0, 0
+
+  def get_eye_mask_for_face_crop(self) -> np.ndarray:
+    """
+    Return a binary (0/255) eye mask in local face-crop coordinates.
+    Shape matches face crop / strong-change masks.
+    """
+    height, width = self._resolve_face_crop_shape()
+    if width <= 0 or height <= 0:
+      return np.zeros((0, 0), dtype=np.uint8)
+
+    ellipse = self.eye_ellipse_face_crop
+    if ellipse is None:
+      ellipse = self.eye_ellipse
+      if ellipse is None:
+        return np.zeros((height, width), dtype=np.uint8)
+
+      x1_f, y1_f, x2_f, y2_f = [float(v) for v in self.bbox]
+      x1_f = max(0.0, min(1.0, x1_f))
+      x2_f = max(0.0, min(1.0, x2_f))
+      y1_f = max(0.0, min(1.0, y1_f))
+      y2_f = max(0.0, min(1.0, y2_f))
+
+      box_w = x2_f - x1_f
+      box_h = y2_f - y1_f
+      if box_w <= 1e-8 or box_h <= 1e-8:
+        return np.zeros((height, width), dtype=np.uint8)
+
+      cx_local_norm = (float(ellipse.center[0]) - x1_f) / box_w
+      cy_local_norm = (float(ellipse.center[1]) - y1_f) / box_h
+      ax_local_norm = float(ellipse.axes[0]) / box_w
+      ay_local_norm = float(ellipse.axes[1]) / box_h
+      ellipse = Ellipse(
+        center=(cx_local_norm, cy_local_norm),
+        axes=(ax_local_norm, ay_local_norm),
+        angle=float(ellipse.angle),
+      )
+
+    cx = float(ellipse.center[0]) * width
+    cy = float(ellipse.center[1]) * height
+    ax = float(ellipse.axes[0]) * width
+    ay = float(ellipse.axes[1]) * height
+    if ax <= 0 or ay <= 0:
+      return np.zeros((height, width), dtype=np.uint8)
+
+    mask = np.zeros((height, width), dtype=np.uint8)
+    center_px = (int(round(cx)), int(round(cy)))
+    axes_px = (max(1, int(round(ax))), max(1, int(round(ay))))
+    cv2.ellipse(mask, center_px, axes_px, float(ellipse.angle), 0, 360, 255, -1)
+    return mask
+
+  def get_strong_change_eye_mask(self) -> np.ndarray:
+    """
+    Return a binary (0/255) mask in local face-crop coordinates for:
+    (strong_change_mask OR strong_change_mask_color) AND eye_mask.
+    """
+    height, width = self._resolve_face_crop_shape()
+    if width <= 0 or height <= 0:
+      return np.zeros((0, 0), dtype=np.uint8)
+
+    eye_mask = self.get_eye_mask_for_face_crop()
+    if eye_mask.size == 0 or np.count_nonzero(eye_mask) == 0:
+      return np.zeros((height, width), dtype=np.uint8)
+
+    strong_union_local = np.zeros((height, width), dtype=np.uint8)
+
+    for mask in (self.strong_change_mask, self.strong_change_mask_color):
+      if mask is None or mask.size == 0:
+        continue
+      local_mask = mask
+      if local_mask.ndim == 3:
+        local_mask = cv2.cvtColor(local_mask, cv2.COLOR_BGR2GRAY)
+      resized = cv2.resize(local_mask, (width, height), interpolation=cv2.INTER_NEAREST)
+      strong_union_local = cv2.bitwise_or(strong_union_local, (resized > 0).astype(np.uint8) * 255)
+
+    return cv2.bitwise_and(strong_union_local, eye_mask)
 
 
 @dataclasses.dataclass
@@ -492,7 +581,8 @@ class Upscaler(object):
   ) -> typing.Optional[Ellipse]:
     """
     Build a directed oval mask for the eye region.
-    The oval axis follows the eye line and covers eye corners plus half the nose.
+    The major axis is aligned with the eye line and centered on the eye midpoint.
+    It should fully cover both eyes (not just the triangle between eyes and nose).
     Returns normalized ellipse params for use on any image of the same aspect.
     """
     if not landmarks5 or len(landmarks5) < 3:
@@ -524,12 +614,12 @@ class Upscaler(object):
     nose_vec_y = ny - eye_center_y
     nose_dist = float(np.hypot(nose_vec_x, nose_vec_y))
 
-    center_x = eye_center_x + nose_vec_x * 0.35
-    center_y = eye_center_y + nose_vec_y * 0.35
+    center_x = eye_center_x
+    center_y = eye_center_y
 
     angle_deg = float(np.degrees(np.arctan2(eye_dy, eye_dx)))
-    axis_x = max(1.0, eye_dist * 0.7)
-    axis_y = max(1.0, max(eye_dist * 0.45, nose_dist * 0.6))
+    axis_x = max(1.0, eye_dist * 0.90)
+    axis_y = max(1.0, max(eye_dist * 0.38, nose_dist * 0.30))
 
     return Ellipse(
       center=(center_x / w, center_y / h),
@@ -587,17 +677,38 @@ class Upscaler(object):
       face_detection = faces[i]
       face_px = face_detection.size_px
       landmarks5 = None
+      landmarks_all = None
       eye_ellipse = None
-      if i < len(helper.all_landmarks_5):
+      all_landmarks_68 = getattr(helper, "all_landmarks_68", None)
+      if all_landmarks_68 is not None and i < len(all_landmarks_68):
+        landmarks = all_landmarks_68[i].astype(float)
+      elif i < len(helper.all_landmarks_5):
         landmarks = helper.all_landmarks_5[i].astype(float)
+      else:
+        landmarks = None
+
+      if landmarks is not None:
         landmarks[:, 0] /= float(up_w) if up_w else 1.0
         landmarks[:, 1] /= float(up_h) if up_h else 1.0
-        landmarks5 = landmarks.tolist()
+        landmarks_all = landmarks.tolist()
+        if landmarks.shape[0] >= 5:
+          landmarks5 = landmarks[:5].tolist()
+        else:
+          landmarks5 = landmarks.tolist()
+
+      if landmarks5 is not None:
         eye_ellipse = self._create_eye_ellipse(
           landmarks5=landmarks5,
           image_shape=(orig_h, orig_w),
         )
       bbox_norm = face_detection.bbox_norm
+      eye_ellipse_face_crop = None
+      transformed_landmarks = None
+      if landmarks_all is not None:
+        points = np.asarray(landmarks_all, dtype=np.float32).reshape(-1, 2)
+        if points.shape[0] >= 3:
+          transformed_landmarks = points.copy()
+
       ox1 = int(round(bbox_norm[0] * orig_w))
       oy1 = int(round(bbox_norm[1] * orig_h))
       ox2 = int(round(bbox_norm[2] * orig_w))
@@ -622,20 +733,50 @@ class Upscaler(object):
           flags=cv2.INTER_LINEAR,
           borderMode=cv2.BORDER_REFLECT_101,
         )
+        if transformed_landmarks is not None:
+          transformed_landmarks[:, 0] *= float(up_w) if up_w else 1.0
+          transformed_landmarks[:, 1] *= float(up_h) if up_h else 1.0
+          transformed_landmarks = cv2.transform(
+            transformed_landmarks[None, :, :],
+            np.asarray(face_detection.affine_matrix, dtype=np.float32),
+          )[0]
+          transformed_landmarks[:, 0] /= float(face_crop.shape[1]) if face_crop.shape[1] else 1.0
+          transformed_landmarks[:, 1] /= float(face_crop.shape[0]) if face_crop.shape[0] else 1.0
       elif ox2 > ox1 and oy2 > oy1:
         original_crop = original_bgr[oy1:oy2, ox1:ox2].copy()
+        if transformed_landmarks is not None:
+          ux1 = float(bbox_norm[0]) * float(up_w)
+          uy1 = float(bbox_norm[1]) * float(up_h)
+          ux2 = float(bbox_norm[2]) * float(up_w)
+          uy2 = float(bbox_norm[3]) * float(up_h)
+          box_w = max(1e-8, ux2 - ux1)
+          box_h = max(1e-8, uy2 - uy1)
+          transformed_landmarks[:, 0] = (transformed_landmarks[:, 0] * float(up_w) - ux1) / box_w
+          transformed_landmarks[:, 1] = (transformed_landmarks[:, 1] * float(up_h) - uy1) / box_h
         if original_crop.size and original_crop.shape[:2] != face_crop.shape[:2]:
           original_crop = cv2.resize(
             original_crop,
             (face_crop.shape[1], face_crop.shape[0]),
             interpolation=cv2.INTER_LINEAR,
           )
+      if transformed_landmarks is not None:
+        eye_ellipse_face_crop = self._create_eye_ellipse(
+          landmarks5=transformed_landmarks[:5].tolist(),
+          image_shape=(
+            int(face_crop.shape[0]) if face_crop is not None and face_crop.size else 0,
+            int(face_crop.shape[1]) if face_crop is not None and face_crop.size else 0,
+          ),
+        )
       face_info = UpscaleFaceInfo(
         bbox=bbox_norm,
         face_px=face_px,
         algorithm="",
         landmarks5=landmarks5,
+        landmarks_all=landmarks_all,
+        landmarks_all_face_crop=(transformed_landmarks.tolist() if transformed_landmarks is not None else None),
         eye_ellipse=eye_ellipse,
+        eye_ellipse_face_crop=eye_ellipse_face_crop,
+        face_crop_shape=(int(face_crop.shape[0]), int(face_crop.shape[1])) if face_crop is not None and face_crop.size else None,
       )
 
       if (
@@ -698,6 +839,11 @@ class Upscaler(object):
         )
         face_info.strong_change_mask = diff_result["mask_u8"]
         face_info.strong_change_mask_color = diff_result["mask_color_u8"]
+        face_info.face_crop_shape = (
+          int(source_face_for_diff.shape[0]),
+          int(source_face_for_diff.shape[1]),
+        )
+        face_info.strong_change_eye_mask = face_info.get_strong_change_eye_mask()
         if fill_debug_images:
           face_info.debug_transformed_face = self._cv2_ready_bgr(local_restored_faces[0]).copy()
 

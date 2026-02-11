@@ -57,42 +57,15 @@ def detect_reversals(
   *,
   image_shape: typing.Tuple[int, int],
 ) -> typing.List[str]:
-  h, w = image_shape
-  if h <= 0 or w <= 0:
+  if image_shape[0] <= 0 or image_shape[1] <= 0:
     return []
-  if face_info.strong_change_mask is None:
-    return []
-
-  eye_mask = face_info.get_eye_mask(width=w, height=h)
-  if eye_mask.size == 0 or np.count_nonzero(eye_mask) == 0:
-    return []
-
-  mask = face_info.strong_change_mask
-  if mask.ndim == 3:
-    mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+  mask = face_info.strong_change_eye_mask
+  if mask is None:
+    mask = face_info.get_strong_change_eye_mask()
   if mask.size == 0:
     return []
 
-  x1_f, y1_f, x2_f, y2_f = [float(v) for v in face_info.bbox]
-  x1 = int(round(max(0.0, min(1.0, x1_f)) * w))
-  x2 = int(round(max(0.0, min(1.0, x2_f)) * w))
-  y1 = int(round(max(0.0, min(1.0, y1_f)) * h))
-  y2 = int(round(max(0.0, min(1.0, y2_f)) * h))
-
-  if x2 <= x1 or y2 <= y1:
-    return []
-
-  target_w = max(1, x2 - x1)
-  target_h = max(1, y2 - y1)
-  resized = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
-  if resized.ndim == 3:
-    resized = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-
-  full_mask = np.zeros((h, w), dtype=np.uint8)
-  full_mask[y1:y2, x1:x2] = resized
-
-  overlap = np.logical_and(full_mask > 0, eye_mask > 0)
-  if np.any(overlap):
+  if np.any(mask > 0):
     return ["revert-eyes"]
   return []
 
