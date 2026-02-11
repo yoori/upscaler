@@ -934,11 +934,16 @@ class Upscaler(object):
         algorithm="",
         landmarks5=landmarks5,
         landmarks_all=landmarks_all,
-        landmarks_all_face_crop=(transformed_landmarks.tolist() if transformed_landmarks is not None else None),
+        landmarks_all_face_crop=(
+          transformed_landmarks.tolist() if transformed_landmarks is not None else None
+        ),
         eye_ellipse=eye_ellipse,
         eye_ellipse_face_crop=eye_ellipse_face_crop,
         mouth_ellipse_face_crop=mouth_ellipse_face_crop,
-        face_crop_shape=(int(face_crop.shape[0]), int(face_crop.shape[1])) if face_crop is not None and face_crop.size else None,
+        face_crop_shape=(
+          int(face_crop.shape[0]),
+          int(face_crop.shape[1])
+        ) if face_crop is not None and face_crop.size else None,
       )
 
       if (
@@ -1173,14 +1178,19 @@ class Upscaler(object):
     # 5) Clean mask + remove tiny components
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 
-    def _clean(mask01_local: np.ndarray) -> typing.Tuple[np.ndarray, typing.List[typing.List[int]]]:
+    def _clean(
+      mask01_local: np.ndarray
+    ) -> typing.Tuple[np.ndarray, typing.List[typing.List[int]]]:
       mask_u8_local = (mask01_local * 255.0).astype(np.uint8)
       mask_u8_local = cv2.morphologyEx(mask_u8_local, cv2.MORPH_OPEN, kernel, iterations=1)
       mask_u8_local = cv2.morphologyEx(mask_u8_local, cv2.MORPH_CLOSE, kernel, iterations=1)
 
       boxes_local: typing.List[typing.List[int]] = []
       if int(min_area) > 0:
-        num, labels, stats, _ = cv2.connectedComponentsWithStats((mask_u8_local > 0).astype(np.uint8), connectivity=8)
+        num, labels, stats, _ = cv2.connectedComponentsWithStats(
+          (mask_u8_local > 0).astype(np.uint8),
+          connectivity=8,
+        )
         cleaned = np.zeros_like(mask_u8_local)
         for idx in range(1, num):
           x, y, w, h, area = stats[idx]

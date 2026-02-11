@@ -208,10 +208,18 @@ async def main(
         rollback_mask_before_opening = face_info.get_face_rollback_mask_before_opening()
         rollback_mask = face_info.get_face_rollback_mask(diff_opening_window=diff_opening_window)
         rollback_mask_before_opening_preview = rollback_mask_before_opening
-        if rollback_mask_before_opening_preview is not None and getattr(rollback_mask_before_opening_preview, "size", 0) and len(rollback_mask_before_opening_preview.shape) == 2:
-          rollback_mask_before_opening_preview = cv2.cvtColor(rollback_mask_before_opening_preview, cv2.COLOR_GRAY2BGR)
+        if (rollback_mask_before_opening_preview is not None and
+          getattr(rollback_mask_before_opening_preview, "size", 0) and
+          len(rollback_mask_before_opening_preview.shape) == 2
+        ):
+          rollback_mask_before_opening_preview = cv2.cvtColor(
+            rollback_mask_before_opening_preview,
+            cv2.COLOR_GRAY2BGR
+          )
         rollback_mask_preview = rollback_mask
-        if rollback_mask_preview is not None and getattr(rollback_mask_preview, "size", 0) and len(rollback_mask_preview.shape) == 2:
+        if (rollback_mask_preview is not None and getattr(rollback_mask_preview, "size", 0) and
+          len(rollback_mask_preview.shape) == 2
+        ):
           rollback_mask_preview = cv2.cvtColor(rollback_mask_preview, cv2.COLOR_GRAY2BGR)
         strong_change_face_masks = None
         if rollback_mask is not None and getattr(rollback_mask, "size", 0):
@@ -219,15 +227,36 @@ async def main(
           rollback_eye_mask = None
           rollback_mouth_mask = None
           rollback_polygon_mask = None
-          if eye_mask is not None and getattr(eye_mask, "size", 0) and eye_mask.shape[:2] == rollback_mask.shape[:2]:
+          if (eye_mask is not None and getattr(eye_mask, "size", 0) and
+            eye_mask.shape[:2] == rollback_mask.shape[:2]
+          ):
             rollback_eye_mask = cv2.bitwise_and(rollback_mask, eye_mask)
-          if mouth_mask is not None and getattr(mouth_mask, "size", 0) and mouth_mask.shape[:2] == rollback_mask.shape[:2]:
+          if (mouth_mask is not None and getattr(mouth_mask, "size", 0) and
+            mouth_mask.shape[:2] == rollback_mask.shape[:2]
+          ):
             rollback_mouth_mask = cv2.bitwise_and(rollback_mask, mouth_mask)
-          if polygon_mask is not None and getattr(polygon_mask, "size", 0) and polygon_mask.shape[:2] == rollback_mask.shape[:2]:
+          if (polygon_mask is not None and getattr(polygon_mask, "size", 0) and
+            polygon_mask.shape[:2] == rollback_mask.shape[:2]
+          ):
             rollback_polygon_mask = cv2.bitwise_and(rollback_mask, polygon_mask)
-          strong_change_face_masks = _overlay_mask(strong_change_face_masks, rollback_eye_mask, color=(0, 255, 0), alpha=0.95)
-          strong_change_face_masks = _overlay_mask(strong_change_face_masks, rollback_mouth_mask, color=(0, 165, 255), alpha=0.95)
-          strong_change_face_masks = _overlay_mask(strong_change_face_masks, rollback_polygon_mask, color=(255, 255, 0), alpha=0.95)
+          strong_change_face_masks = _overlay_mask(
+            strong_change_face_masks,
+            rollback_eye_mask,
+            color=(0, 255, 0),
+            alpha=0.95,
+          )
+          strong_change_face_masks = _overlay_mask(
+            strong_change_face_masks,
+            rollback_mouth_mask,
+            color=(0, 165, 255),
+            alpha=0.95,
+          )
+          strong_change_face_masks = _overlay_mask(
+            strong_change_face_masks,
+            rollback_polygon_mask,
+            color=(255, 255, 0),
+            alpha=0.95,
+          )
 
         face_masks_overlay_source = transformed_face
         if face_masks_overlay_source is None:
