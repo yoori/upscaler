@@ -388,7 +388,8 @@ class UpscaleParams:
   # diff-mask controls for per-face debug masks
   # normalized threshold in [0, 1]
   diff_thr: float = (10.0 / 255.0)
-  diff_min_area: int = 15
+  # minimal connected-component area as a fraction of face crop area in [0, 1]
+  diff_min_area: float = 0.0003
 
 
 @dataclasses.dataclass(frozen=True)
@@ -531,7 +532,7 @@ class Upscaler(object):
           enable_codeformer=False,
           fill_debug_images=bool(params.fill_debug_images),
           diff_thr=float(params.diff_thr),
-          diff_min_area=int(params.diff_min_area),
+          diff_min_area=float(params.diff_min_area),
           info=result_info,
         )
 
@@ -551,7 +552,7 @@ class Upscaler(object):
           enable_codeformer=True,
           fill_debug_images=bool(params.fill_debug_images),
           diff_thr=float(params.diff_thr),
-          diff_min_area=int(params.diff_min_area),
+          diff_min_area=float(params.diff_min_area),
           info=result_info,
         )
 
@@ -808,7 +809,7 @@ class Upscaler(object):
     enable_codeformer: bool,
     fill_debug_images: bool,
     diff_thr: float,
-    diff_min_area: int,
+    diff_min_area: float,
     info: UpscaleInfo,
   ) -> typing.Tuple[np.ndarray, UpscaleInfo]:
 
@@ -1017,7 +1018,7 @@ class Upscaler(object):
           restored_for_diff,
           win=3,
           diff_thr=float(diff_thr),
-          min_area=int(diff_min_area),
+          min_area_ratio=float(diff_min_area),
         )
         face_info.strong_change_mask = diff_result.mask_u8
         face_info.strong_change_mask_color = diff_result.mask_color_u8
@@ -1147,7 +1148,7 @@ class Upscaler(object):
     *,
     win: int = 21,
     diff_thr: float = (18.0 / 255.0),
-    min_area: int = 80,
+    min_area_ratio: float = 0.0003,
   ) -> DiffZonesMeanWindowResult:
     """
     Find zones where img1 deviates from img0 significantly, after averaging over a window.
@@ -1202,7 +1203,9 @@ class Upscaler(object):
       mask_u8_local = cv2.morphologyEx(mask_u8_local, cv2.MORPH_CLOSE, kernel, iterations=1)
 
       boxes_local: typing.List[typing.List[int]] = []
-      if int(min_area) > 0:
+      min_area_ratio_local = float(np.clip(float(min_area_ratio), 0.0, 1.0))
+      min_area_px = int(np.ceil(min_area_ratio_local * float(mask_u8_local.shape[0] * mask_u8_local.shape[1])))
+      if min_area_px > 0:
         num, labels, stats, _ = cv2.connectedComponentsWithStats(
           (mask_u8_local > 0).astype(np.uint8),
           connectivity=8,
@@ -1210,7 +1213,7 @@ class Upscaler(object):
         cleaned = np.zeros_like(mask_u8_local)
         for idx in range(1, num):
           x, y, w, h, area = stats[idx]
-          if int(area) >= int(min_area):
+          if int(area) >= int(min_area_px):
             cleaned[labels == idx] = 255
             boxes_local.append([int(x), int(y), int(x + w), int(y + h)])
         mask_u8_local = cleaned

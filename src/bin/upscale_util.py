@@ -183,7 +183,7 @@ async def main(
   output_faces: str = None,
   outscale: float = 4.0,
   diff_thr: float = (10.0 / 255.0),
-  diff_min_area: int = 80,
+  diff_min_area: float = 0.0003,
   diff_opening_window: float = 0.007,
 ):
   upscalerr = upscaler.Upscaler(
@@ -353,7 +353,7 @@ async def main(
           f"outscale={float(outscale):g}; "
           f"diff_opening_window={float(diff_opening_window):g}; "
           f"diff_thr={float(diff_thr):g}; "
-          f"diff_min_area={int(diff_min_area)}"
+          f"diff_min_area={float(diff_min_area):g}"
         )
         face_img = _with_header(face_img, collage_params)
         face_path = os.path.join(output_faces, f"face_{idx}.png")
@@ -391,7 +391,7 @@ if __name__ == "__main__":
   parser.add_argument("--output-faces", type=str, default=None)
   parser.add_argument('--outscale', type=float, default=4.0)
   parser.add_argument('--diff-thr', type=float, default=(10.0 / 255.0), help='Normalized threshold in [0, 1]')
-  parser.add_argument('--diff-min-area', type=int, default=15)
+  parser.add_argument('--diff-min-area', type=float, default=0.0003, help='Min area in [0, 1] as share of face crop')
   parser.add_argument('--diff-opening-window', type=float, default=0.007)
   parser.set_defaults(use_codeformer=True)
   args = parser.parse_args()
