@@ -1165,14 +1165,6 @@ class Upscaler(object):
           face_crop_for_codeformer,
           fidelity=codeformer_fidelity,
         )
-        self._debug_save_codeformer(
-          face_crop_bgr=face_crop_for_codeformer,
-          restored_bgr=result_face,
-          diff_mask=diff_mask,
-          d=d,
-          out_dir='./debug/',
-          tag="face" + str(i),
-        )
         local_restored_faces = [ result_face ]
       elif self._face_enhancer is not None:
         face_info.algorithm = "gfpgan"
@@ -1316,8 +1308,6 @@ class Upscaler(object):
 
     helper.get_inverse_affine(None)
 
-    #result_info = info.copy().update({'faces': face_infos})
-    #print(f"XXX P4, result_info = {str(result_info)}")
     pasted = helper.paste_faces_to_input_image(upsample_img=None)
 
     if fill_debug_images:
@@ -1387,7 +1377,6 @@ class Upscaler(object):
     return net
 
   def _restore_face_codeformer(self, face_crop_bgr: np.ndarray, *, fidelity: float) -> np.ndarray:
-    print("> _restore_face_codeformer")
     # CodeFormer expects RGB, normalized to [-1,1], BCHW
     rgb = cv2.cvtColor(face_crop_bgr, cv2.COLOR_BGR2RGB)
     x = rgb.astype(np.float32) / 255.0
@@ -1554,48 +1543,3 @@ class Upscaler(object):
     diff_thr_u8 = float(np.clip(float(diff_thr), 0.0, 1.0) * 255.0)
     mask_u8 = (diff_mean >= diff_thr_u8).astype(np.uint8) * 255
     return mask_u8
-
-  def _debug_save_codeformer(
-    self,
-    *,
-    face_crop_bgr: np.ndarray,
-    restored_bgr: np.ndarray,
-    out_dir: str,
-    diff_mask: np.ndarray = None,
-    d: np.ndarray = None,
-    tag: str = "",
-  ) -> None:
-
-    try:
-      os.makedirs(out_dir, exist_ok=True)
-
-      face0 = self._cv2_ready_bgr(face_crop_bgr)
-      face1 = self._cv2_ready_bgr(restored_bgr)
-      face_mask = self._cv2_ready_bgr(diff_mask) if diff_mask is not None else None
-
-      name = "codeformer"
-      if tag:
-        name += "_" + str(tag)
-
-      p_in = os.path.join(out_dir, name + "_in.jpg")
-      p_out = os.path.join(out_dir, name + "_out.jpg")
-      p_pair = os.path.join(out_dir, name + "_pair.jpg")
-      print(f"p_pair: {p_pair}")
-
-      cv2.imwrite(p_in, face0)
-      cv2.imwrite(p_out, face1)
-
-      # side-by-side
-      h0, w0 = face0.shape[:2]
-      h1, w1 = face1.shape[:2]
-      if h0 == h1:
-        pair = np.concatenate(
-          [face0, face1] +
-          ([face_mask] if face_mask is not None else []) +
-          ([self._cv2_ready_bgr(d)] if d is not None else []),
-          axis=1
-        )
-        cv2.imwrite(p_pair, pair)
-
-    except Exception as e:
-      print("_debug_save_codeformer failed: " + str(e))
