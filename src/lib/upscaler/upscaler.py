@@ -548,8 +548,12 @@ class DiffZonesMeanWindowResult:
   diff_color_mean: np.ndarray
   mask01: np.ndarray
   mask_color01: np.ndarray
+  mask01_before_components: np.ndarray
+  mask_color01_before_components: np.ndarray
   mask_u8: np.ndarray
   mask_color_u8: np.ndarray
+  mask_u8_before_components: np.ndarray
+  mask_color_u8_before_components: np.ndarray
   boxes: typing.List[typing.List[int]]
   boxes_color: typing.List[typing.List[int]]
   d: np.ndarray
@@ -1140,6 +1144,8 @@ class Upscaler(object):
       crop_on_upscaled = self._cv2_ready_bgr(face_crop) if face_crop is not None and face_crop.size else None
       strong_change_mask: typing.Optional[np.ndarray] = None
       strong_change_mask_color: typing.Optional[np.ndarray] = None
+      strong_change_mask_before_components: typing.Optional[np.ndarray] = None
+      strong_change_mask_color_before_components: typing.Optional[np.ndarray] = None
       face_crop_shape = (
         (int(crop_on_upscaled.shape[0]), int(crop_on_upscaled.shape[1]))
         if crop_on_upscaled is not None and crop_on_upscaled.size else None
@@ -1198,6 +1204,8 @@ class Upscaler(object):
           )
           strong_change_mask = diff_result.mask_u8
           strong_change_mask_color = diff_result.mask_color_u8
+          strong_change_mask_before_components = diff_result.mask_u8_before_components
+          strong_change_mask_color_before_components = diff_result.mask_color_u8_before_components
           face_crop_shape = (
             int(crop_on_upscaled.shape[0]),
             int(crop_on_upscaled.shape[1]),
@@ -1282,12 +1290,24 @@ class Upscaler(object):
         )
         strong_change_mask = diff_result.mask_u8
         strong_change_mask_color = diff_result.mask_color_u8
+        strong_change_mask_before_components = diff_result.mask_u8_before_components
+        strong_change_mask_color_before_components = diff_result.mask_color_u8_before_components
         face_crop_shape = (
           int(source_face_for_diff.shape[0]),
           int(source_face_for_diff.shape[1]),
         )
         if fill_debug_images:
           debug_transformed_face = self._cv2_ready_bgr(local_restored_faces[0]).copy()
+          self._append_face_step(
+            face_info,
+            name="strong change mask before components",
+            image=strong_change_mask_before_components,
+          )
+          self._append_face_step(
+            face_info,
+            name="strong change mask color before components",
+            image=strong_change_mask_color_before_components,
+          )
 
       if fill_debug_images and original_crop is not None:
         debug_original_crop = self._cv2_ready_bgr(original_crop).copy()
@@ -1461,10 +1481,11 @@ class Upscaler(object):
 
     def _clean(
       mask01_local: np.ndarray
-    ) -> typing.Tuple[np.ndarray, typing.List[typing.List[int]]]:
+    ) -> typing.Tuple[np.ndarray, np.ndarray, typing.List[typing.List[int]]]:
       mask_u8_local = (mask01_local * 255.0).astype(np.uint8)
       mask_u8_local = cv2.morphologyEx(mask_u8_local, cv2.MORPH_OPEN, kernel, iterations=1)
       mask_u8_local = cv2.morphologyEx(mask_u8_local, cv2.MORPH_CLOSE, kernel, iterations=1)
+      mask_u8_before_components_local = mask_u8_local.copy()
 
       boxes_local: typing.List[typing.List[int]] = []
       min_area_ratio_local = float(np.clip(float(min_area_ratio), 0.0, 1.0))
@@ -1481,18 +1502,22 @@ class Upscaler(object):
             cleaned[labels == idx] = 255
             boxes_local.append([int(x), int(y), int(x + w), int(y + h)])
         mask_u8_local = cleaned
-      return mask_u8_local, boxes_local
+      return mask_u8_local, mask_u8_before_components_local, boxes_local
 
-    mask_u8, boxes = _clean(mask01)
-    mask_color_u8, boxes_color = _clean(mask_color01)
+    mask_u8, mask_u8_before_components, boxes = _clean(mask01)
+    mask_color_u8, mask_color_u8_before_components, boxes_color = _clean(mask_color01)
 
     return DiffZonesMeanWindowResult(
       diff_mean=diff_mean,
       diff_color_mean=diff_color_mean,
       mask01=(mask_u8.astype(np.float32) / 255.0),
       mask_color01=(mask_color_u8.astype(np.float32) / 255.0),
+      mask01_before_components=(mask_u8_before_components.astype(np.float32) / 255.0),
+      mask_color01_before_components=(mask_color_u8_before_components.astype(np.float32) / 255.0),
       mask_u8=mask_u8,
       mask_color_u8=mask_color_u8,
+      mask_u8_before_components=mask_u8_before_components,
+      mask_color_u8_before_components=mask_color_u8_before_components,
       boxes=boxes,
       boxes_color=boxes_color,
       d=d,
