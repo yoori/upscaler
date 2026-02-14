@@ -149,6 +149,38 @@ def _overlay_mask(
   return base
 
 
+def _parse_bool_flag(value: str) -> bool:
+  v = str(value).strip().lower()
+  return v in {"1", "true", "yes", "y", "on"}
+
+
+def _parse_face_processor(raw: str) -> upscaler.FaceProcessor:
+  parts = [x.strip() for x in str(raw).split(":")]
+  if not parts or not parts[0]:
+    raise ValueError(f"Empty face processor entry: {raw}")
+
+  processor = parts[0]
+  if processor not in {"codeformer", "gfpgan", "restoreformer", "rollback_diff"}:
+    raise ValueError(f"Unknown processor: {processor}")
+  max_apply_px = None
+  stop_apply = True
+
+  if len(parts) >= 2 and parts[1] != "":
+    max_apply_px = int(parts[1])
+  if len(parts) >= 3 and parts[2] != "":
+    stop_apply = _parse_bool_flag(parts[2])
+
+  return upscaler.FaceProcessor(
+    processor=typing.cast(upscaler.FaceProcessorName, processor),
+    max_apply_px=max_apply_px,
+    stop_apply=stop_apply,
+  )
+
+
+def _default_face_processors() -> typing.List[upscaler.FaceProcessor]:
+  return upscaler.default_face_processors()
+
+
 def _draw_landmark_crosses(
   image: typing.Optional[np.ndarray],
   points_norm: typing.Optional[typing.List[typing.List[float]]],
@@ -178,18 +210,24 @@ def _draw_landmark_crosses(
 
 async def main(
   files: typing.List[ProcessFile],
-  use_codeformer: bool = True,
-  codeformer_fidelity=0.3,
+  codeformer_fidelity: float = 0.3,
   output_faces: str = None,
   outscale: float = 4.0,
   diff_thr: float = (10.0 / 255.0),
   diff_min_area: float = 0.0003,
   diff_opening_window: float = 0.007,
+  face_processors: typing.Optional[typing.List[upscaler.FaceProcessor]] = None,
+  restoreformer_weights: typing.Optional[str] = None,
 ):
+  resolved_face_processors = face_processors
+  if resolved_face_processors is None:
+    resolved_face_processors = _default_face_processors()
+
   upscalerr = upscaler.Upscaler(
     realesrgan_weights="RealESRGAN_x4plus.pth",
     gfpgan_weights="GFPGANv1.4.pth",
-    codeformer_weights=("codeformer.pth" if use_codeformer else None),
+    restoreformer_weights=restoreformer_weights,
+    codeformer_weights="codeformer.pth",
   )
 
   for file_info in files:
@@ -203,6 +241,7 @@ async def main(
         diff_thr=diff_thr,
         diff_min_area=diff_min_area,
         diff_opening_window=diff_opening_window,
+        face_processors=resolved_face_processors,
       )
     )
 
@@ -282,13 +321,13 @@ if __name__ == "__main__":
   parser.add_argument("-i", "--input", type=str)
   parser.add_argument("-o", "--output", type=str)
   parser.add_argument("--codeformer-fidelity", type=float, default=0.3)
-  parser.add_argument('--no-codeformer', dest='use_codeformer', action='store_false')
   parser.add_argument("--output-faces", type=str, default=None)
   parser.add_argument('--outscale', type=float, default=4.0)
   parser.add_argument('--diff-thr', type=float, default=(10.0 / 255.0), help='Normalized threshold in [0, 1]')
   parser.add_argument('--diff-min-area', type=float, default=0.0003, help='Min area in [0, 1] as share of face crop')
   parser.add_argument('--diff-opening-window', type=float, default=0.007)
-  parser.set_defaults(use_codeformer=True)
+  parser.add_argument('--face-processor', action='append', default=None, help='format: processor[:max_apply_px[:stop_apply]]')
+  parser.add_argument('--restoreformer-weights', type=str, default=None)
   args = parser.parse_args()
 
   input_path = pathlib.Path(args.input)
@@ -311,15 +350,20 @@ if __name__ == "__main__":
     resolved_output.parent.mkdir(parents=True, exist_ok=True)
     files = [ProcessFile(input_file=input_path, output_file=resolved_output)]
 
+  face_processors = None
+  if args.face_processor:
+    face_processors = [_parse_face_processor(x) for x in args.face_processor]
+
   global_loop.run_until_complete(
     main(
       files,
-      use_codeformer=args.use_codeformer,
       codeformer_fidelity=args.codeformer_fidelity,
       output_faces=args.output_faces,
       outscale=args.outscale,
       diff_thr=args.diff_thr,
       diff_min_area=args.diff_min_area,
       diff_opening_window=args.diff_opening_window,
+      face_processors=face_processors,
+      restoreformer_weights=args.restoreformer_weights,
     )
   )

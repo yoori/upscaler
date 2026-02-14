@@ -27,20 +27,58 @@ def encode_bgr_to_png_bytes(img_bgr: np.ndarray) -> bytes:
     raise ValueError("Failed to encode image as PNG")
   return buf.tobytes()
 
+def _parse_bool_flag(value: str) -> bool:
+  v = str(value).strip().lower()
+  return v in {"1", "true", "yes", "y", "on"}
+
+
+def _parse_face_processor(raw: str) -> upscaler.FaceProcessor:
+  parts = [x.strip() for x in str(raw).split(":")]
+  if not parts or not parts[0]:
+    raise ValueError(f"Empty face processor entry: {raw}")
+
+  processor = parts[0]
+  if processor not in {"codeformer", "gfpgan", "restoreformer", "rollback_diff"}:
+    raise ValueError(f"Unknown processor: {processor}")
+
+  max_apply_px = None
+  stop_apply = True
+  if len(parts) >= 2 and parts[1] != "":
+    max_apply_px = int(parts[1])
+  if len(parts) >= 3 and parts[2] != "":
+    stop_apply = _parse_bool_flag(parts[2])
+
+  return upscaler.FaceProcessor(
+    processor=typing.cast(upscaler.FaceProcessorName, processor),
+    max_apply_px=max_apply_px,
+    stop_apply=stop_apply,
+  )
+
+
+def _resolve_face_processors(
+  face_processor: typing.Optional[typing.List[str]],
+) -> typing.List[upscaler.FaceProcessor]:
+  if not face_processor:
+    return []
+  return [_parse_face_processor(x) for x in face_processor]
+
 
 class Config(object):
   realesrgan_weights: str = None
   gfpgan_weights: str = None
+  restoreformer_weights: str = None
   codeformer_weights: str = None
 
   def __init__(self):
     self.realesrgan_weights = 'RealESRGAN_x4plus.pth'
     self.gfpgan_weights = None
+    self.restoreformer_weights = None
     self.codeformer_weights = None
 
   def init_json(self, config_json) :
     self.realesrgan_weights = config_json.get('realesrgan_weights', 'RealESRGAN_x4plus.pth')
     self.gfpgan_weights = config_json.get('gfpgan_weights', None)
+    self.restoreformer_weights = config_json.get('restoreformer_weights', None)
     self.codeformer_weights = config_json.get('codeformer_weights', None)
 
 
@@ -61,6 +99,7 @@ async def lifespan(app: fastapi.FastAPI):
   upscalerr = upscaler.Upscaler(
     realesrgan_weights=config.realesrgan_weights,
     gfpgan_weights=config.gfpgan_weights,
+    restoreformer_weights=config.restoreformer_weights,
     codeformer_weights=config.codeformer_weights,
   )
 
@@ -90,7 +129,10 @@ async def upscale(
   file: fastapi.UploadFile = fastapi.File(...),
   outscale: float = fastapi.Query(4.0, ge=1.0, le=8.0, description="Output scale multiplier (e.g. 2, 4)"),
   tile: int = fastapi.Query(0, ge=0, le=2048, description="Tile size to reduce VRAM, 0=disabled"),
-  face: bool = fastapi.Query(False, description="Enable face restoration (GFPGAN/CodeFormer) if available"),
+  face_processor: typing.Optional[typing.List[str]] = fastapi.Query(
+    None,
+    description="Repeatable: processor[:max_apply_px[:stop_apply]]; omit to disable face processing",
+  ),
 ):
   """
   Upload one image -> return upscaled PNG.
@@ -106,10 +148,15 @@ async def upscale(
   except Exception as e:
     raise fastapi.HTTPException(status_code=400, detail=f"Bad image: {e}")
 
+  try:
+    processors = _resolve_face_processors(face_processor)
+  except Exception as e:
+    raise fastapi.HTTPException(status_code=400, detail=f"Bad face_processor: {e}")
+
   params = upscaler.UpscaleParams(
     outscale=outscale,
     tile=tile,
-    face_mode=("auto_per_face" if face else "off"),
+    face_processors=processors,
   )
 
   try:
@@ -130,7 +177,7 @@ async def upscale_batch(
   files: typing.List[fastapi.UploadFile] = fastapi.File(...),
   outscale: float = fastapi.Query(4.0, ge=1.0, le=8.0),
   tile: int = fastapi.Query(0, ge=0, le=2048),
-  face: bool = fastapi.Query(False),
+  face_processor: typing.Optional[typing.List[str]] = fastapi.Query(None),
 ):
   """
   Upload multiple images -> returns ZIP with PNG results.
@@ -147,10 +194,15 @@ async def upscale_batch(
     payloads.append((f.filename or "image", data))
 
   zip_buf = io.BytesIO()
+  try:
+    processors = _resolve_face_processors(face_processor)
+  except Exception as e:
+    raise fastapi.HTTPException(status_code=400, detail=f"Bad face_processor: {e}")
+
   params = upscaler.UpscaleParams(
     outscale=outscale,
     tile=tile,
-    face_mode=("auto_per_face" if face else "off"),
+    face_processors=processors,
   )
 
   with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
