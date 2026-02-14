@@ -14,7 +14,22 @@ import facexlib.utils.face_restoration_helper
 import codeformer.basicsr.archs.codeformer_arch
 
 
-FaceMode = typing.Literal["off", "gfpgan", "auto_per_face"]
+FaceProcessorName = typing.Literal["codeformer", "gfpgan", "restoreformer", "rollback_diff"]
+
+
+@dataclasses.dataclass(frozen=True)
+class FaceProcessor:
+  max_apply_px: typing.Optional[int] = None
+  processor: FaceProcessorName = "gfpgan"
+  stop_apply: bool = True
+
+
+def default_face_processors() -> typing.List[FaceProcessor]:
+  return [
+    FaceProcessor(max_apply_px=96, processor="codeformer", stop_apply=True),
+    FaceProcessor(processor="gfpgan", stop_apply=False),
+    FaceProcessor(processor="rollback_diff", stop_apply=True),
+  ]
 
 
 def _clamp_norm(value: float) -> float:
@@ -496,7 +511,7 @@ class UpscaleFaceInfo:
 
 @dataclasses.dataclass
 class UpscaleInfo:
-  face_mode: FaceMode
+  face_processors: typing.List[FaceProcessor] = dataclasses.field(default_factory=list)
   faces: typing.List[UpscaleFaceInfo] = dataclasses.field(default_factory=list)
   fallback: typing.Optional[str] = None
 
@@ -505,12 +520,7 @@ class UpscaleInfo:
 class UpscaleParams:
   outscale: float = 4.0
   tile: int = 0
-
-  face_mode: FaceMode = "auto_per_face"
   only_center_face: bool = False
-
-  # per-face threshold on ORIGINAL image (min(w,h) in px)
-  min_face_px: int = 96
 
   # GFPGAN strengths
   gfpgan_weight: float = 0.35
@@ -529,6 +539,11 @@ class UpscaleParams:
   diff_min_area: float = 0.0003
   # opening window size for rollback mask as fraction of face crop width
   diff_opening_window: float = 0.03
+
+  face_processors: typing.List[FaceProcessor] = dataclasses.field(default_factory=default_face_processors)
+
+  def resolved_face_processors(self) -> typing.List[FaceProcessor]:
+    return list(self.face_processors)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -552,10 +567,12 @@ class Upscaler(object):
     self,
     realesrgan_weights: str = "RealESRGAN_x4plus.pth",
     gfpgan_weights: typing.Optional[str] = None,
+    restoreformer_weights: typing.Optional[str] = None,
     codeformer_weights: typing.Optional[str] = None,
   ):
     self._realesrgan_weights = realesrgan_weights
     self._gfpgan_weights = gfpgan_weights
+    self._restoreformer_weights = restoreformer_weights
     self._codeformer_weights = codeformer_weights
 
     self._device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -600,6 +617,19 @@ class Upscaler(object):
     else:
       self._face_enhancer = None
 
+    # RestoreFormer (optional; uses GFPGAN helper with RestoreFormer architecture)
+    if self._restoreformer_weights is not None:
+      self._restoreformer_enhancer = gfpgan.GFPGANer(
+        model_path=self._restoreformer_weights,
+        upscale=1,
+        arch="RestoreFormer",
+        channel_multiplier=2,
+        bg_upsampler=None,
+        device=self._device,
+      )
+    else:
+      self._restoreformer_enhancer = None
+
     # CodeFormer (optional)
     self._codeformer_net = None
     if self._codeformer_weights is not None:
@@ -621,7 +651,9 @@ class Upscaler(object):
     if params is None:
       params = UpscaleParams()
 
-    result_info = UpscaleInfo(face_mode=params.face_mode)
+    face_processors = params.resolved_face_processors()
+    print("face_processors: " + str(face_processors))
+    result_info = UpscaleInfo(face_processors=face_processors)
 
     if img_bgr is None or img_bgr.ndim != 3 or img_bgr.shape[2] != 3:
       raise Upscaler.Exception("Expected BGR image HxWx3")
@@ -632,51 +664,26 @@ class Upscaler(object):
     outscale = params.outscale
 
     async with self._lock:
-      # 1) Upscale
       self._upsampler.tile = tile
       up_bgr, _ = self._upsampler.enhance(img_bgr, outscale=outscale)
 
-      # 2) Faces
-      if params.face_mode == "off":
+      if not face_processors:
         return (up_bgr, result_info)
 
-      elif params.face_mode == "gfpgan":
-        if self._face_enhancer is None:
-          raise Upscaler.Exception("GFPGAN requested but weights not configured")
-
-        return (
-          self._apply_gfpgan_whole(
-            up_bgr,
-            weight=float(params.gfpgan_weight),
-            only_center_face=bool(params.only_center_face),
-          ),
-          result_info,
-        )
-
-      elif params.face_mode == "auto_per_face":
-        if self._face_enhancer is None and self._codeformer_net is None:
-          return (up_bgr, result_info)
-
-        return self._apply_faces_routed(
-          original_bgr=img_bgr,
-          upscaled_bgr=up_bgr,
-          min_face_px=int(params.min_face_px),
-          only_center_face=bool(params.only_center_face),
-          # routing: small->codeformer (if configured), else GFPGAN(weight_small)
-          # large->GFPGAN(weight_normal)
-          gfpgan_weight_normal=float(params.gfpgan_weight),
-          gfpgan_weight_small=float(params.gfpgan_weight_small),
-          codeformer_fidelity=float(params.codeformer_fidelity),
-          enable_codeformer=(self._codeformer_net is not None),
-          fill_debug_images=bool(params.fill_debug_images),
-          diff_thr=float(params.diff_thr),
-          diff_min_area=float(params.diff_min_area),
-          diff_opening_window=float(params.diff_opening_window),
-          info=result_info,
-        )
-
-      else:
-        raise Upscaler.Exception(f"Unknown face_mode: {params.face_mode}")
+      return self._apply_faces_routed(
+        original_bgr=img_bgr,
+        upscaled_bgr=up_bgr,
+        only_center_face=bool(params.only_center_face),
+        gfpgan_weight_normal=float(params.gfpgan_weight),
+        gfpgan_weight_small=float(params.gfpgan_weight_small),
+        codeformer_fidelity=float(params.codeformer_fidelity),
+        fill_debug_images=bool(params.fill_debug_images),
+        diff_thr=float(params.diff_thr),
+        diff_min_area=float(params.diff_min_area),
+        diff_opening_window=float(params.diff_opening_window),
+        face_processors=face_processors,
+        info=result_info,
+      )
 
   async def close(self):
     pass
@@ -690,6 +697,23 @@ class Upscaler(object):
   ) -> np.ndarray:
 
     _, _, restored = self._face_enhancer.enhance(
+      img_bgr,
+      has_aligned=False,
+      only_center_face=only_center_face,
+      paste_back=True,
+      weight=weight,
+    )
+    return restored
+
+  def _apply_restoreformer_whole(
+    self,
+    img_bgr: np.ndarray,
+    *,
+    weight: float,
+    only_center_face: bool,
+  ) -> np.ndarray:
+
+    _, _, restored = self._restoreformer_enhancer.enhance(
       img_bgr,
       has_aligned=False,
       only_center_face=only_center_face,
@@ -965,16 +989,15 @@ class Upscaler(object):
     *,
     original_bgr: np.ndarray,
     upscaled_bgr: np.ndarray,
-    min_face_px: int,
     only_center_face: bool,
     gfpgan_weight_normal: float,
     gfpgan_weight_small: float,
     codeformer_fidelity: float,
-    enable_codeformer: bool,
     fill_debug_images: bool,
     diff_thr: float,
     diff_min_area: float,
     diff_opening_window: float,
+    face_processors: typing.List[FaceProcessor],
     info: UpscaleInfo,
   ) -> typing.Tuple[np.ndarray, UpscaleInfo]:
 
@@ -1132,43 +1155,69 @@ class Upscaler(object):
         self._append_face_step(face_info, name="original crop", image=original_crop)
         self._append_face_step(face_info, name="original upscaled", image=crop_on_upscaled)
 
-      if (
-        enable_codeformer and
-        self._codeformer_net is not None and
-        face_px < min_face_px
-      ):
-        face_info.algorithm = "codeformer"
-        face_crop_for_codeformer = face_crop
-        if original_crop is not None:
-          face_crop_for_codeformer = original_crop
-        result_face = self._restore_face_codeformer(
-          face_crop_for_codeformer,
-          fidelity=codeformer_fidelity,
-        )
-        local_restored_faces = [ result_face ]
-      elif self._face_enhancer is not None:
-        face_info.algorithm = "gfpgan"
-        w = gfpgan_weight_small if face_px < min_face_px else gfpgan_weight_normal
-        _, local_restored_faces, _ = self._face_enhancer.enhance(
-          face_crop,
-          has_aligned=True,
-          only_center_face=True,
-          paste_back=False,
-          weight=w,
-        )
-        if local_restored_faces:
-          gfpgan_face = self._cv2_ready_bgr(local_restored_faces[0])
+      current_face = self._cv2_ready_bgr(face_crop)
+      algorithms: typing.List[str] = []
 
+      for processor in face_processors:
+        if processor.max_apply_px is not None and face_px >= int(processor.max_apply_px):
+          continue
+
+        if processor.processor == "codeformer":
+          if self._codeformer_net is None:
+            continue
+          face_crop_for_codeformer = current_face
+          if original_crop is not None:
+            face_crop_for_codeformer = original_crop
+          current_face = self._restore_face_codeformer(
+            face_crop_for_codeformer,
+            fidelity=codeformer_fidelity,
+          )
+          algorithms.append("codeformer")
           if fill_debug_images:
-            self._append_face_step(face_info, name="gfpgan transformed", image=gfpgan_face)
+            self._append_face_step(face_info, name="codeformer transformed", image=current_face)
 
+        elif processor.processor == "gfpgan":
+          if self._face_enhancer is None:
+            continue
+          gfpgan_small_px = int(processor.max_apply_px) if processor.max_apply_px is not None else None
+          w = gfpgan_weight_small if (gfpgan_small_px is not None and face_px < gfpgan_small_px) else gfpgan_weight_normal
+          _, local_restored_faces, _ = self._face_enhancer.enhance(
+            current_face,
+            has_aligned=True,
+            only_center_face=True,
+            paste_back=False,
+            weight=w,
+          )
+          if local_restored_faces:
+            current_face = self._cv2_ready_bgr(local_restored_faces[0])
+            algorithms.append("gfpgan")
+            if fill_debug_images:
+              self._append_face_step(face_info, name="gfpgan transformed", image=current_face)
+
+        elif processor.processor == "restoreformer":
+          if self._restoreformer_enhancer is None:
+            continue
+          _, local_restored_faces, _ = self._restoreformer_enhancer.enhance(
+            current_face,
+            has_aligned=True,
+            only_center_face=True,
+            paste_back=False,
+            weight=float(gfpgan_weight_normal),
+          )
+          if local_restored_faces:
+            current_face = self._cv2_ready_bgr(local_restored_faces[0])
+            algorithms.append("restoreformer")
+            if fill_debug_images:
+              self._append_face_step(face_info, name="restoreformer transformed", image=current_face)
+
+        elif processor.processor == "rollback_diff":
           if crop_on_upscaled is None:
             crop_on_upscaled = self._cv2_ready_bgr(face_crop)
 
-          if gfpgan_face.shape[:2] != crop_on_upscaled.shape[:2]:
+          if current_face.shape[:2] != crop_on_upscaled.shape[:2]:
             crop_on_upscaled = cv2.resize(
               crop_on_upscaled,
-              (gfpgan_face.shape[1], gfpgan_face.shape[0]),
+              (current_face.shape[1], current_face.shape[0]),
               interpolation=cv2.INTER_LINEAR,
             )
 
@@ -1177,17 +1226,16 @@ class Upscaler(object):
             mouth_mask = face_info.get_mouth_mask_for_face_crop(face_crop_shape)
             nose_zone_mask = face_info.get_nose_zone_mask_for_face_crop(face_crop_shape)
             face_masks_overlay = self._build_face_masks_overlay(
-              base_image=gfpgan_face,
+              base_image=current_face,
               eye_mask=eye_mask,
               mouth_mask=mouth_mask,
               nose_zone_mask=nose_zone_mask,
             )
             self._append_face_step(face_info, name="face masks", image=face_masks_overlay)
 
-          # evaluate diff masks
           diff_result = self._diff_zones_mean_window(
             crop_on_upscaled,
-            gfpgan_face,
+            current_face,
             win=3,
             diff_thr=float(diff_thr),
             min_area_ratio=float(diff_min_area),
@@ -1205,20 +1253,24 @@ class Upscaler(object):
 
           if rollback_mask is not None and rollback_mask.size:
             rollback_mask01 = (rollback_mask > 0).astype(np.uint8)
-            gfpgan_face = np.where(
+            current_face = np.where(
               rollback_mask01[:, :, None] > 0,
               crop_on_upscaled,
-              gfpgan_face,
+              current_face,
             )
 
+          algorithms.append("rollback_diff")
           if fill_debug_images:
-            self._append_face_step(face_info, name="rollback result", image=gfpgan_face)
+            self._append_face_step(face_info, name="rollback result", image=current_face)
 
-          local_restored_faces = [gfpgan_face]
-      else:
-        # fallback
+        if processor.stop_apply:
+          break
+
+      if not algorithms:
         face_info.algorithm = "fallback"
-        local_restored_faces = [face_crop]
+      else:
+        face_info.algorithm = "+".join(algorithms)
+      local_restored_faces = [current_face]
 
       assert local_restored_faces is not None
       restored_faces.extend([self._cv2_ready_bgr(x) for x in local_restored_faces])
