@@ -17,6 +17,29 @@ import codeformer.basicsr.archs.codeformer_arch
 FaceMode = typing.Literal["off", "gfpgan", "auto_per_face"]
 
 
+def _clamp_norm(value: float) -> float:
+  return max(0.0, min(1.0, float(value)))
+
+
+def _bbox_norm_to_pixels(
+  bbox_norm: typing.Sequence[float],
+  *,
+  width: int,
+  height: int,
+) -> typing.Tuple[int, int, int, int]:
+  x1_f, y1_f, x2_f, y2_f = [float(v) for v in bbox_norm]
+  x1_f = _clamp_norm(x1_f)
+  y1_f = _clamp_norm(y1_f)
+  x2_f = _clamp_norm(x2_f)
+  y2_f = _clamp_norm(y2_f)
+  return (
+    int(round(x1_f * width)),
+    int(round(y1_f * height)),
+    int(round(x2_f * width)),
+    int(round(y2_f * height)),
+  )
+
+
 @dataclasses.dataclass(frozen=True)
 class Ellipse:
   center: typing.Tuple[float, float]
@@ -78,6 +101,18 @@ class UpscaleFaceInfo:
   mouth_ellipse_face_crop: typing.Optional[Ellipse] = None
   steps: typing.List[UpscaleFaceInfoStep] = dataclasses.field(default_factory=list)
 
+  def _normalized_bbox(self) -> typing.Tuple[float, float, float, float]:
+    x1_f, y1_f, x2_f, y2_f = [float(v) for v in self.bbox]
+    return (
+      _clamp_norm(x1_f),
+      _clamp_norm(y1_f),
+      _clamp_norm(x2_f),
+      _clamp_norm(y2_f),
+    )
+
+  def _bbox_pixels(self, *, width: int, height: int) -> typing.Tuple[int, int, int, int]:
+    return _bbox_norm_to_pixels(self.bbox, width=width, height=height)
+
   def visualize(
     self,
     image_bgr: np.ndarray,
@@ -101,20 +136,8 @@ class UpscaleFaceInfo:
       raise ValueError("Expected image HxW or HxWx3")
 
     h, w = image_bgr.shape[:2]
-    x1_f, y1_f, x2_f, y2_f = [float(v) for v in self.bbox]
-    x1_f = max(0.0, min(1.0, x1_f))
-    x2_f = max(0.0, min(1.0, x2_f))
-    y1_f = max(0.0, min(1.0, y1_f))
-    y2_f = max(0.0, min(1.0, y2_f))
-    x1 = int(round(x1_f * w))
-    x2 = int(round(x2_f * w))
-    y1 = int(round(y1_f * h))
-    y2 = int(round(y2_f * h))
+    x1, y1, x2, y2 = self._bbox_pixels(width=w, height=h)
 
-    x1 = max(0, min(x1, w))
-    x2 = max(0, min(x2, w))
-    y1 = max(0, min(y1, h))
-    y2 = max(0, min(y2, h))
 
     if x2 <= x1 or y2 <= y1:
       return image_bgr[0:0, 0:0].copy()
@@ -192,11 +215,7 @@ class UpscaleFaceInfo:
       if ellipse is None:
         return np.zeros((height, width), dtype=np.uint8)
 
-      x1_f, y1_f, x2_f, y2_f = [float(v) for v in self.bbox]
-      x1_f = max(0.0, min(1.0, x1_f))
-      x2_f = max(0.0, min(1.0, x2_f))
-      y1_f = max(0.0, min(1.0, y1_f))
-      y2_f = max(0.0, min(1.0, y2_f))
+      x1_f, y1_f, x2_f, y2_f = self._normalized_bbox()
 
       box_w = x2_f - x1_f
       box_h = y2_f - y1_f
@@ -274,7 +293,7 @@ class UpscaleFaceInfo:
       mouth_left_local = (float(mouth_left[0]), float(mouth_left[1]))
       mouth_right_local = (float(mouth_right[0]), float(mouth_right[1]))
     elif self.landmarks5 is not None and len(self.landmarks5) >= 5:
-      x1_f, y1_f, x2_f, y2_f = [float(v) for v in self.bbox]
+      x1_f, y1_f, x2_f, y2_f = self._normalized_bbox()
       box_w = x2_f - x1_f
       box_h = y2_f - y1_f
       if box_w <= 1e-8 or box_h <= 1e-8:
@@ -518,14 +537,8 @@ class DiffZonesMeanWindowResult:
   diff_color_mean: np.ndarray
   mask01: np.ndarray
   mask_color01: np.ndarray
-  mask01_before_components: np.ndarray
-  mask_color01_before_components: np.ndarray
   mask_u8: np.ndarray
   mask_color_u8: np.ndarray
-  mask_u8_before_components: np.ndarray
-  mask_color_u8_before_components: np.ndarray
-  boxes: typing.List[typing.List[int]]
-  boxes_color: typing.List[typing.List[int]]
   d: np.ndarray
   d_color: np.ndarray
 
@@ -1031,14 +1044,11 @@ class Upscaler(object):
         if points.shape[0] >= 3:
           transformed_landmarks = points.copy()
 
-      ox1 = int(round(bbox_norm[0] * orig_w))
-      oy1 = int(round(bbox_norm[1] * orig_h))
-      ox2 = int(round(bbox_norm[2] * orig_w))
-      oy2 = int(round(bbox_norm[3] * orig_h))
-      ox1 = max(0, min(ox1, orig_w))
-      ox2 = max(0, min(ox2, orig_w))
-      oy1 = max(0, min(oy1, orig_h))
-      oy2 = max(0, min(oy2, orig_h))
+      ox1, oy1, ox2, oy2 = _bbox_norm_to_pixels(
+        bbox_norm,
+        width=orig_w,
+        height=orig_h,
+      )
       original_crop = None
       if face_detection.affine_matrix is not None and face_crop.size:
         matrix_for_original = np.asarray(face_detection.affine_matrix, dtype=np.float32).copy()
@@ -1113,8 +1123,6 @@ class Upscaler(object):
       crop_on_upscaled = self._cv2_ready_bgr(face_crop) if face_crop is not None and face_crop.size else None
       strong_change_mask: typing.Optional[np.ndarray] = None
       strong_change_mask_color: typing.Optional[np.ndarray] = None
-      strong_change_mask_before_components: typing.Optional[np.ndarray] = None
-      strong_change_mask_color_before_components: typing.Optional[np.ndarray] = None
       face_crop_shape = (
         (int(crop_on_upscaled.shape[0]), int(crop_on_upscaled.shape[1]))
         if crop_on_upscaled is not None and crop_on_upscaled.size else None
@@ -1133,7 +1141,7 @@ class Upscaler(object):
         face_crop_for_codeformer = face_crop
         if original_crop is not None:
           face_crop_for_codeformer = original_crop
-        result_face, diff_mask, d = self._restore_face_codeformer(
+        result_face = self._restore_face_codeformer(
           face_crop_for_codeformer,
           fidelity=codeformer_fidelity,
         )
@@ -1184,36 +1192,16 @@ class Upscaler(object):
             diff_thr=float(diff_thr),
             min_area_ratio=float(diff_min_area),
           )
-          strong_change_mask = diff_result.mask_u8
-          strong_change_mask_color = diff_result.mask_color_u8
-          face_crop_shape = (
-            int(crop_on_upscaled.shape[0]),
-            int(crop_on_upscaled.shape[1]),
-          )
 
           rollback_mask = face_info.get_face_rollback_mask(
-            strong_change_mask=strong_change_mask,
-            strong_change_mask_color=strong_change_mask_color,
+            strong_change_mask=diff_result.mask_u8,
+            strong_change_mask_color=diff_result.mask_color_u8,
             face_crop_shape=face_crop_shape,
             diff_opening_window=float(diff_opening_window),
           )
 
           if fill_debug_images:
             self._append_face_step(face_info, name="base rollback mask", image=rollback_mask)
-
-          """
-          rollback_mask, _ = self._connected_components_mask_filter(
-            rollback_mask,
-            min_area_ratio=float(diff_min_area),
-          )
-
-          if fill_debug_images:
-            self._append_face_step(
-              face_info,
-              name="rollback mask after connected components",
-              image=rollback_mask,
-            )
-          """
 
           if rollback_mask is not None and rollback_mask.size:
             rollback_mask01 = (rollback_mask > 0).astype(np.uint8)
@@ -1233,41 +1221,7 @@ class Upscaler(object):
         local_restored_faces = [face_crop]
 
       assert local_restored_faces is not None
-
       restored_faces.extend([self._cv2_ready_bgr(x) for x in local_restored_faces])
-
-      source_face_for_diff = self._cv2_ready_bgr(face_crop)
-
-      if face_info.algorithm == "codeformer" and original_crop is not None:
-        source_face_for_diff = self._cv2_ready_bgr(original_crop)
-
-      restored_for_diff = self._cv2_ready_bgr(local_restored_faces[0])
-
-      if source_face_for_diff.shape[:2] != restored_for_diff.shape[:2]:
-        restored_for_diff = cv2.resize(
-          restored_for_diff,
-          (source_face_for_diff.shape[1], source_face_for_diff.shape[0]),
-          interpolation=cv2.INTER_LINEAR,
-        )
-
-      diff_result = self._diff_zones_mean_window(
-        source_face_for_diff,
-        restored_for_diff,
-        win=3,
-        diff_thr=float(diff_thr),
-        min_area_ratio=float(diff_min_area),
-      )
-      strong_change_mask = diff_result.mask_u8
-      strong_change_mask_color = diff_result.mask_color_u8
-      strong_change_mask_before_components = cv2.bitwise_or(
-        diff_result.mask_u8_before_components,
-        diff_result.mask_color_u8_before_components,
-      )
-      face_crop_shape = (
-        int(source_face_for_diff.shape[0]),
-        int(source_face_for_diff.shape[1]),
-      )
-
       face_infos.append(face_info)
 
     for rf in restored_faces:
@@ -1298,15 +1252,7 @@ class Upscaler(object):
           self._append_face_step(face_info, name="result", image=pasted_face)
           continue
 
-        bbox_norm = detection.bbox_norm
-        px1 = int(round(bbox_norm[0] * up_w))
-        py1 = int(round(bbox_norm[1] * up_h))
-        px2 = int(round(bbox_norm[2] * up_w))
-        py2 = int(round(bbox_norm[3] * up_h))
-        px1 = max(0, min(px1, up_w))
-        px2 = max(0, min(px2, up_w))
-        py1 = max(0, min(py1, up_h))
-        py2 = max(0, min(py2, up_h))
+        px1, py1, px2, py2 = _bbox_norm_to_pixels(detection.bbox_norm, width=up_w, height=up_h)
         if px2 > px1 and py2 > py1:
           pasted_face = pasted[py1:py2, px1:px2].copy()
           self._append_face_step(face_info, name="result", image=pasted_face)
@@ -1366,9 +1312,7 @@ class Upscaler(object):
 
     bgr = cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
 
-    d = self._diff_zones_mean_window(face_crop_bgr, bgr, win=3)
-
-    return bgr, d.mask_u8, d.d
+    return bgr
 
   def _connected_components_mask_filter(
     self,
@@ -1452,38 +1396,18 @@ class Upscaler(object):
     mask01 = (diff_mean >= diff_thr_u8).astype(np.float32)
     mask_color01 = (diff_color_mean >= diff_thr_u8).astype(np.float32)
 
-    # 5) Clean mask + remove tiny components
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-
-    def _clean(
-      mask01_local: np.ndarray
-    ) -> typing.Tuple[np.ndarray, np.ndarray, typing.List[typing.List[int]]]:
-      mask_u8_local = (mask01_local * 255.0).astype(np.uint8)
-      mask_u8_local = cv2.morphologyEx(mask_u8_local, cv2.MORPH_OPEN, kernel, iterations=1)
-      mask_u8_local = cv2.morphologyEx(mask_u8_local, cv2.MORPH_CLOSE, kernel, iterations=1)
-      mask_u8_before_components_local = mask_u8_local.copy()
-      mask_u8_local, boxes_local = self._connected_components_mask_filter(
-        mask_u8_local,
-        min_area_ratio=float(min_area_ratio),
-      )
-      return mask_u8_local, mask_u8_before_components_local, boxes_local
-
-    mask_u8, mask_u8_before_components, boxes = _clean(mask01)
-    mask_color_u8, mask_color_u8_before_components, boxes_color = _clean(mask_color01)
+    mask_u8 = mask01
+    boxes = []
+    mask_color_u8 = mask_color01
+    boxes_color = []
 
     return DiffZonesMeanWindowResult(
       diff_mean=diff_mean,
       diff_color_mean=diff_color_mean,
       mask01=(mask_u8.astype(np.float32) / 255.0),
       mask_color01=(mask_color_u8.astype(np.float32) / 255.0),
-      mask01_before_components=(mask_u8_before_components.astype(np.float32) / 255.0),
-      mask_color01_before_components=(mask_color_u8_before_components.astype(np.float32) / 255.0),
       mask_u8=mask_u8,
       mask_color_u8=mask_color_u8,
-      mask_u8_before_components=mask_u8_before_components,
-      mask_color_u8_before_components=mask_color_u8_before_components,
-      boxes=boxes,
-      boxes_color=boxes_color,
       d=d,
       d_color=d_color,
     )
