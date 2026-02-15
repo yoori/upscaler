@@ -339,8 +339,18 @@ class UpscaleFaceInfo:
     polygon[:, 0] = np.clip(polygon[:, 0], 0, max(0, width - 1))
     polygon[:, 1] = np.clip(polygon[:, 1], 0, max(0, height - 1))
 
+    # cv2.fillConvexPoly expects points in contour order.
+    # Build a convex hull first so the resulting shape is order-invariant
+    # and always covers all triangles formed by landmark points.
+    hull = cv2.convexHull(polygon)
+    if hull is None or hull.size == 0:
+      return np.zeros((height, width), dtype=np.uint8)
+    hull = hull.reshape(-1, 2)
+    if hull.shape[0] < 3:
+      return np.zeros((height, width), dtype=np.uint8)
+
     mask = np.zeros((height, width), dtype=np.uint8)
-    cv2.fillConvexPoly(mask, polygon, 255)
+    cv2.fillConvexPoly(mask, hull, 255)
 
     if nose_local is not None and mouth_left_local is not None and mouth_right_local is not None:
       nose_x = int(round(float(nose_local[0]) * width))
@@ -534,13 +544,13 @@ class UpscaleParams:
 
   # diff-mask controls for per-face debug masks
   # normalized threshold in [0, 1]
-  diff_thr: float = (20.0 / 255.0)
+  diff_thr: float = 0.02
   # minimal connected-component area as a fraction of face crop area in [0, 1]
-  diff_min_area: float = 0.0003
+  diff_min_area: float = 0.0001
   # opening window size for rollback mask as fraction of face crop width
-  diff_opening_window: float = 0.03
+  diff_opening_window: float = 0.005
   # extra rollback-mask dilation as fraction of face crop width
-  rollback_extend: float = 0.0
+  rollback_extend: float = 0.01
 
   face_processors: typing.List[FaceProcessor] = dataclasses.field(default_factory=default_face_processors)
 
