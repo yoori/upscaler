@@ -2,6 +2,7 @@ import argparse
 import dataclasses
 import pathlib
 import random
+import sys
 import typing
 
 import cv2
@@ -32,6 +33,7 @@ class FacePartStateDataset(Dataset):
   def __init__(
     self,
     images_dir: pathlib.Path,
+    device: str = "cpu",
     face_size: int = 512,
     image_size: int = 224,
     repeat: int = 3,
@@ -41,6 +43,7 @@ class FacePartStateDataset(Dataset):
     seed: int = 42,
   ):
     self.images_dir = images_dir
+    self.device = device
     self.face_size = face_size
     self.image_size = image_size
     self.repeat = max(1, repeat)
@@ -75,11 +78,13 @@ class FacePartStateDataset(Dataset):
       crop_ratio=(1, 1),
       det_model="retinaface_resnet50",
       use_parse=False,
-      device="cpu",
+      device=self.device,
     )
 
     all_faces: typing.List[FaceMeta] = []
-    for path in image_paths:
+    total_images = len(image_paths)
+    for index, path in enumerate(image_paths, start=1):
+      self._print_progress(index, total_images)
       image = cv2.imread(str(path))
       if image is None:
         continue
@@ -120,7 +125,22 @@ class FacePartStateDataset(Dataset):
           )
         )
 
+    if total_images > 0:
+      print(file=sys.stderr)
+
     return all_faces
+
+  def _print_progress(self, index: int, total: int) -> None:
+    bar_width = 28
+    progress = index / max(1, total)
+    filled = int(round(bar_width * progress))
+    bar = "#" * filled + "-" * (bar_width - filled)
+    print(
+      f"\rCollecting faces: [{bar}] {index}/{total}",
+      end="",
+      file=sys.stderr,
+      flush=True,
+    )
 
   def _face_box_from_landmarks(
     self,
@@ -366,6 +386,7 @@ def run_epoch(
 def train(args: argparse.Namespace):
   dataset = FacePartStateDataset(
     images_dir=pathlib.Path(args.images_dir),
+    device=args.device,
     face_size=args.face_size,
     image_size=args.image_size,
     repeat=args.repeat,
