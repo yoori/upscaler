@@ -534,11 +534,13 @@ class UpscaleParams:
 
   # diff-mask controls for per-face debug masks
   # normalized threshold in [0, 1]
-  diff_thr: float = (10.0 / 255.0)
+  diff_thr: float = (20.0 / 255.0)
   # minimal connected-component area as a fraction of face crop area in [0, 1]
   diff_min_area: float = 0.0003
   # opening window size for rollback mask as fraction of face crop width
   diff_opening_window: float = 0.03
+  # extra rollback-mask dilation as fraction of face crop width
+  rollback_extend: float = 0.0
 
   face_processors: typing.List[FaceProcessor] = dataclasses.field(default_factory=default_face_processors)
 
@@ -681,6 +683,7 @@ class Upscaler(object):
         diff_thr=float(params.diff_thr),
         diff_min_area=float(params.diff_min_area),
         diff_opening_window=float(params.diff_opening_window),
+        rollback_extend=float(params.rollback_extend),
         face_processors=face_processors,
         info=result_info,
       )
@@ -997,6 +1000,7 @@ class Upscaler(object):
     diff_thr: float,
     diff_min_area: float,
     diff_opening_window: float,
+    rollback_extend: float,
     face_processors: typing.List[FaceProcessor],
     info: UpscaleInfo,
   ) -> typing.Tuple[np.ndarray, UpscaleInfo]:
@@ -1248,6 +1252,17 @@ class Upscaler(object):
             diff_opening_window=float(diff_opening_window),
           )
 
+          if rollback_mask is not None and rollback_mask.size and float(rollback_extend) >= 1e-5:
+            extend_kernel_w = max(1, int(round(float(face_crop_shape[1]) * float(rollback_extend))))
+            if extend_kernel_w % 2 == 0:
+              extend_kernel_w += 1
+            if extend_kernel_w > 1:
+              extend_kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (extend_kernel_w, extend_kernel_w),
+              )
+              rollback_mask = cv2.dilate(rollback_mask, extend_kernel, iterations=1)
+
           if fill_debug_images:
             self._append_face_step(face_info, name="base rollback mask", image=rollback_mask)
 
@@ -1403,7 +1418,7 @@ class Upscaler(object):
     img1_bgr: np.ndarray,
     *,
     win: int = 21,
-    diff_thr: float = (18.0 / 255.0),
+    diff_thr: float = (20.0 / 255.0),
     min_area_ratio: float = 0.0003,
   ) -> DiffZonesMeanWindowResult:
     """

@@ -213,11 +213,12 @@ async def main(
   codeformer_fidelity: float = 0.3,
   output_faces: str = None,
   outscale: float = 4.0,
-  diff_thr: float = (10.0 / 255.0),
+  diff_thr: float = (20.0 / 255.0),
   diff_min_area: float = 0.0003,
   diff_opening_window: float = 0.007,
   face_processors: typing.Optional[typing.List[upscaler.FaceProcessor]] = None,
   restoreformer_weights: typing.Optional[str] = None,
+  rollback_extend: float = 0.0,
 ):
   resolved_face_processors = face_processors
   if resolved_face_processors is None:
@@ -242,6 +243,7 @@ async def main(
         diff_min_area=diff_min_area,
         diff_opening_window=diff_opening_window,
         face_processors=resolved_face_processors,
+        rollback_extend=rollback_extend,
       )
     )
 
@@ -286,6 +288,7 @@ async def main(
         collage_params = (
           f"outscale={float(outscale):g}; "
           f"diff_opening_window={float(diff_opening_window):g}; "
+          f"rollback_extend={float(rollback_extend):g}; "
           f"diff_thr={float(diff_thr):g}; "
           f"diff_min_area={float(diff_min_area):g}"
         )
@@ -323,11 +326,12 @@ if __name__ == "__main__":
   parser.add_argument("--codeformer-fidelity", type=float, default=0.3)
   parser.add_argument("--output-faces", type=str, default=None)
   parser.add_argument('--outscale', type=float, default=4.0)
-  parser.add_argument('--diff-thr', type=float, default=(10.0 / 255.0), help='Normalized threshold in [0, 1]')
+  parser.add_argument('--diff-thr', type=float, default=0.02, help='Normalized threshold in [0, 1]')
   parser.add_argument('--diff-min-area', type=float, default=0.0003, help='Min area in [0, 1] as share of face crop')
   parser.add_argument('--diff-opening-window', type=float, default=0.007)
   parser.add_argument('--face-processor', action='append', default=None, help='format: processor[:max_apply_px[:stop_apply]]')
   parser.add_argument('--restoreformer-weights', type=str, default=None)
+  parser.add_argument('--rollback-extend', type=float, default=0.0)
   args = parser.parse_args()
 
   input_path = pathlib.Path(args.input)
@@ -365,5 +369,6 @@ if __name__ == "__main__":
       diff_opening_window=args.diff_opening_window,
       face_processors=face_processors,
       restoreformer_weights=args.restoreformer_weights,
+      rollback_extend=args.rollback_extend,
     )
   )
