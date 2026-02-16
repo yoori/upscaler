@@ -10,6 +10,8 @@ import torch
 from facexlib.utils.face_restoration_helper import FaceRestoreHelper
 from torch.utils.data import Dataset
 
+from .face_blurrer import BlurMaskMode, BlurMode, FaceBlurrer
+
 
 PARTS = ("eyes", "nose", "mouth")
 STATES = ("visible", "occluded", "blurred", "uncertain")
@@ -49,6 +51,7 @@ class FacePartStateDataset(Dataset):
     self.occlusion_probability = occlusion_probability
     self.uncertain_probability = uncertain_probability
     self.rng = random.Random(seed)
+    self.face_blurrer = FaceBlurrer()
 
     self.face_samples = self._collect_faces()
     if not self.face_samples:
@@ -193,7 +196,7 @@ class FacePartStateDataset(Dataset):
     center_y = max(0.0, min(1.0, center_y))
 
     state_id = self._sample_state()
-    face_augmented = self._apply_state(face_crop, state_id, center_x, center_y, part_id, landmarks_face_crop)
+    face_augmented = self._apply_state(face_crop, state_id, part_id, landmarks_face_crop)
     organ_crop = self._extract_part_crop(face_augmented, center_x, center_y, part_id, landmarks_face_crop)
 
     organ_crop = cv2.cvtColor(organ_crop, cv2.COLOR_BGR2RGB)
@@ -237,125 +240,64 @@ class FacePartStateDataset(Dataset):
     self,
     face_crop: np.ndarray,
     state_id: int,
-    cx: float,
-    cy: float,
     part_id: int,
     landmarks: np.ndarray,
   ) -> np.ndarray:
     out = face_crop.copy()
-    h, w = out.shape[:2]
 
     if state_id == 0:
       return out
 
-    x1, y1, x2, y2 = self._random_roi_bounds(w, h, cx, cy, part_id, landmarks)
+    if state_id == 2:
+      return self.face_blurrer.apply(
+        out,
+        landmarks,
+        blur_mode=self._sample_blur_mode(),
+        mask_mode=self._sample_mask_mode(part_id),
+        strong=True,
+        rng=self.rng,
+      )
 
     if state_id == 1:
-      return self._apply_occlusion(out, x1, y1, x2, y2, strong=True)
-    if state_id == 2:
-      return self._apply_blur(out, x1, y1, x2, y2, strong=True, part_id=part_id, landmarks=landmarks)
+      return self.face_blurrer.apply(
+        out,
+        landmarks,
+        blur_mode=BlurMode.OCCLUDE,
+        mask_mode=self._sample_mask_mode(part_id),
+        strong=True,
+        rng=self.rng,
+      )
 
     if self.rng.random() < 0.5:
-      out = self._apply_blur(out, x1, y1, x2, y2, strong=False, part_id=part_id, landmarks=landmarks)
+      out = self.face_blurrer.apply(
+        out,
+        landmarks,
+        blur_mode=self._sample_blur_mode(),
+        mask_mode=self._sample_mask_mode(part_id),
+        strong=False,
+        rng=self.rng,
+      )
     if self.rng.random() < 0.7:
-      out = self._apply_occlusion(out, x1, y1, x2, y2, strong=False)
+      out = self.face_blurrer.apply(
+        out,
+        landmarks,
+        blur_mode=BlurMode.OCCLUDE,
+        mask_mode=self._sample_mask_mode(part_id),
+        strong=False,
+        rng=self.rng,
+      )
     return out
 
-  def _apply_blur(
-    self,
-    image: np.ndarray,
-    x1: int,
-    y1: int,
-    x2: int,
-    y2: int,
-    strong: bool,
-    part_id: int,
-    landmarks: np.ndarray,
-  ) -> np.ndarray:
-    print("Apply blur")
-    out = image.copy()
-    patch = out[y1:y2, x1:x2]
-    if patch.size == 0:
-      return out
 
+  def _sample_blur_mode(self) -> BlurMode:
     if self.rng.random() < 0.5:
-      k = self.rng.choice([5, 7, 9, 11]) if strong else self.rng.choice([3, 5, 7])
-      patch = cv2.GaussianBlur(patch, (k, k), 0)
-    else:
-      scale = self.rng.uniform(0.08, 0.22) if strong else self.rng.uniform(0.2, 0.35)
-      down_w = max(1, int((x2 - x1) * scale))
-      down_h = max(1, int((y2 - y1) * scale))
-      patch = cv2.resize(patch, (down_w, down_h), interpolation=cv2.INTER_LINEAR)
-      patch = cv2.resize(patch, (x2 - x1, y2 - y1), interpolation=cv2.INTER_NEAREST)
+      return BlurMode.GAUSSIAN
+    return BlurMode.UNIFORM
 
-    mask = self._build_blur_mask(out.shape[:2], part_id, landmarks)
-    if mask.size == 0:
-      return out
-
-    roi_mask = np.zeros(mask.shape, dtype=np.uint8)
-    roi_mask[y1:y2, x1:x2] = 255
-    mask = cv2.bitwise_and(mask, roi_mask)
-    if not np.any(mask):
-      return out
-
-    out[y1:y2, x1:x2] = patch
-    mask_3 = (mask > 0)[..., None]
-    out = np.where(mask_3, out, image)
-    cv2.imwrite("ddd/orig.jpg", image)
-    cv2.imwrite("ddd/mask.jpg", mask)
-    cv2.imwrite("ddd/out.jpg", out)
-    return out
-
-  def _build_blur_mask(self, shape: typing.Tuple[int, int], part_id: int, landmarks: np.ndarray) -> np.ndarray:
-    h, w = shape
-    if h <= 0 or w <= 0:
-      return np.zeros((0, 0), dtype=np.uint8)
-
-    mode = "eyes" if (part_id == 0 or self.rng.random() < 0.5) else "face"
-    mask = np.zeros((h, w), dtype=np.uint8)
-    if mode == "eyes":
-      left_eye = landmarks[0]
-      right_eye = landmarks[1]
-      center = ((left_eye + right_eye) * 0.5).astype(np.float32)
-      eye_dist = float(np.linalg.norm(left_eye - right_eye))
-      ax = max(4, int(round(eye_dist * 0.9)))
-      ay = max(3, int(round(eye_dist * 0.45)))
-      cv2.ellipse(mask, (int(round(center[0])), int(round(center[1]))), (ax, ay), 0, 0, 360, 255, -1)
-      return mask
-
-    min_xy = landmarks.min(axis=0)
-    max_xy = landmarks.max(axis=0)
-    center = ((min_xy + max_xy) * 0.5).astype(np.float32)
-    ax = max(6, int(round((max_xy[0] - min_xy[0]) * 1.15)))
-    ay = max(6, int(round((max_xy[1] - min_xy[1]) * 1.35)))
-    cv2.ellipse(mask, (int(round(center[0])), int(round(center[1]))), (ax, ay), 0, 0, 360, 255, -1)
-    return mask
-
-  def _apply_occlusion(self, image: np.ndarray, x1: int, y1: int, x2: int, y2: int, strong: bool) -> np.ndarray:
-    out = image.copy()
-    base_color = int(self.rng.uniform(0, 255))
-    color = (base_color, base_color, base_color)
-
-    use_hatching = strong and self.rng.random() < 0.4
-    use_hatching = use_hatching or (not strong and self.rng.random() < 0.5)
-    if not use_hatching and (strong or self.rng.random() < 0.5):
-      cv2.rectangle(out, (x1, y1), (x2, y2), color, thickness=-1)
-    else:
-      patch = out[y1:y2, x1:x2]
-      if patch.size == 0:
-        return out
-      patch[:, :] = color
-      hatch_color = tuple(int(v) for v in (255 - base_color, 255 - base_color, 255 - base_color))
-      spacing = self.rng.randint(6, 14) if strong else self.rng.randint(10, 18)
-      thickness = 2 if strong else 1
-      h, w = patch.shape[:2]
-      for shift in range(-h, w + h, spacing):
-        cv2.line(patch, (shift, 0), (shift - h, h), hatch_color, thickness=thickness, lineType=cv2.LINE_AA)
-      if self.rng.random() < 0.35:
-        for shift in range(0, w + h, spacing * 2):
-          cv2.line(patch, (shift, h), (shift - h, 0), hatch_color, thickness=thickness, lineType=cv2.LINE_AA)
-      out[y1:y2, x1:x2] = patch
-    return out
+  def _sample_mask_mode(self, part_id: int) -> BlurMaskMode:
+    if part_id == 0 or self.rng.random() < 0.5:
+      return BlurMaskMode.EYES
+    return BlurMaskMode.FACE
 
   def _extract_part_crop(
     self,
@@ -398,31 +340,6 @@ class FacePartStateDataset(Dataset):
       width = max(12.0, mouth_width * 1.05)
       height = max(10.0, mouth_width * 0.65)
     return (0.0, 0.0, width, height)
-
-  def _random_roi_bounds(
-    self,
-    w: int,
-    h: int,
-    cx: float,
-    cy: float,
-    part_id: int,
-    landmarks: np.ndarray,
-  ) -> typing.Tuple[int, int, int, int]:
-    _, _, organ_w, organ_h = self._organ_extent(part_id, landmarks)
-    min_side = int(max(16, np.ceil(max(organ_w, organ_h))))
-    max_side = max(16, max(h, w))
-    side = min_side if min_side >= max_side else self.rng.randint(min_side, max_side)
-    center_px = int(round(cx * w))
-    center_py = int(round(cy * h))
-    x1 = max(0, center_px - side // 2)
-    y1 = max(0, center_py - side // 2)
-    x2 = min(w, center_px + side // 2)
-    y2 = min(h, center_py + side // 2)
-    if x2 <= x1:
-      x2 = min(w, x1 + 1)
-    if y2 <= y1:
-      y2 = min(h, y1 + 1)
-    return x1, y1, x2, y2
 
   def _extract_square_with_padding(
     self,
