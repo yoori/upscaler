@@ -1,5 +1,6 @@
 import argparse
 import pathlib
+import random
 
 import cv2
 import numpy as np
@@ -19,9 +20,9 @@ def _build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--face-size", type=int, default=512)
   parser.add_argument("--image-size", type=int, default=224)
   parser.add_argument("--repeat", type=int, default=3)
-  parser.add_argument("--blur-probability", type=float, default=0.28)
-  parser.add_argument("--occlusion-probability", type=float, default=0.24)
-  parser.add_argument("--uncertain-probability", type=float, default=0.12)
+  parser.add_argument("--blur-probability", type=float, default=0.8)
+  parser.add_argument("--occlusion-probability", type=float, default=0.1)
+  parser.add_argument("--uncertain-probability", type=float, default=0.1)
   parser.add_argument("--seed", type=int, default=42)
   return parser
 
@@ -87,4 +88,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+  random.seed()
   raise SystemExit(main())
