@@ -24,7 +24,12 @@ def parse_args() -> argparse.Namespace:
     choices=[m.value for m in BlurMaskMode],
     default=BlurMaskMode.FACE.value,
   )
-  parser.add_argument("--strong", action="store_true")
+  parser.add_argument(
+    "--blur-level",
+    type=float,
+    default=0.5,
+    help="Blur intensity in range [0, 1)",
+  )
   parser.add_argument(
     "--det-model",
     type=str,
@@ -86,7 +91,7 @@ def main() -> None:
     landmarks=landmarks,
     blur_mode=BlurMode(args.mode),
     mask_mode=BlurMaskMode(args.mask),
-    strong=bool(args.strong),
+    blur_level=max(0.0, min(0.999999, float(args.blur_level))),
   )
 
   args.output.parent.mkdir(parents=True, exist_ok=True)

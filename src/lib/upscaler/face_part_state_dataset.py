@@ -251,40 +251,40 @@ class FacePartStateDataset(Dataset):
     if state_id == 2:
       return self.face_blurrer.apply(
         out,
-        landmarks,
+        landmarks=landmarks,
         blur_mode=self._sample_blur_mode(),
         mask_mode=self._sample_mask_mode(part_id),
-        strong=True,
         rng=self.rng,
+        blur_level=self.rng.random(),
       )
 
     if state_id == 1:
       return self.face_blurrer.apply(
         out,
-        landmarks,
+        landmarks=landmarks,
         blur_mode=BlurMode.OCCLUDE,
         mask_mode=self._sample_mask_mode(part_id),
-        strong=True,
         rng=self.rng,
+        blur_level=self.rng.random(),
       )
 
     if self.rng.random() < 0.5:
       out = self.face_blurrer.apply(
         out,
-        landmarks,
+        landmarks=landmarks,
         blur_mode=self._sample_blur_mode(),
         mask_mode=self._sample_mask_mode(part_id),
-        strong=False,
         rng=self.rng,
+        blur_level=self.rng.random(),
       )
     if self.rng.random() < 0.7:
       out = self.face_blurrer.apply(
         out,
-        landmarks,
+        landmarks=landmarks,
         blur_mode=BlurMode.OCCLUDE,
         mask_mode=self._sample_mask_mode(part_id),
-        strong=False,
         rng=self.rng,
+        blur_level=self.rng.random(),
       )
     return out
 

@@ -25,7 +25,6 @@ class FaceBlurrer:
     landmarks: np.ndarray,
     blur_mode: BlurMode,
     mask_mode: BlurMaskMode,
-    strong: bool,
     rng: typing.Optional[random.Random] = None,
     blur_level: float = 0.0,
   ) -> np.ndarray:
@@ -42,6 +41,8 @@ class FaceBlurrer:
     if patch.size == 0:
       return out
 
+    effective_mask = mask
+
     if blur_mode == BlurMode.GAUSSIAN:
       MIN_KERNEL = 0.08
       MAX_KERNEL = 0.25
@@ -55,19 +56,28 @@ class FaceBlurrer:
       scale = (6 + 14 * blur_level) / max(x2 - x1, y2 - y1)
       down_w = max(1, int((x2 - x1) * scale))
       down_h = max(1, int((y2 - y1) * scale))
-      patch = cv2.resize(patch, (down_w, down_h), interpolation=cv2.INTER_LINEAR)
-      patch = cv2.resize(patch, (x2 - x1, y2 - y1), interpolation=cv2.INTER_NEAREST)
+      pixelated = cv2.resize(patch, (down_w, down_h), interpolation=cv2.INTER_LINEAR)
+      pixelated = cv2.resize(pixelated, (x2 - x1, y2 - y1), interpolation=cv2.INTER_NEAREST)
+
+      block_w = max(1, int(np.ceil((x2 - x1) / max(1, down_w))))
+      block_h = max(1, int(np.ceil((y2 - y1) / max(1, down_h))))
+      mask_patch = (mask[y1:y2, x1:x2] > 0)
+      patch_mask = self._expand_mask_to_intersecting_blocks(mask_patch, block_w=block_w, block_h=block_h)
+      patch = np.where(patch_mask[..., None], pixelated, patch)
+
+      effective_mask = np.zeros_like(mask, dtype=np.uint8)
+      effective_mask[y1:y2, x1:x2] = patch_mask.astype(np.uint8) * 255
     else:
-      patch = self._apply_occlusion_patch(patch, strong=strong, rng=rng)
+      patch = self._apply_occlusion_patch(patch, blur_level=blur_level, rng=rng)
 
     out[y1:y2, x1:x2] = patch
-    mask_3 = (mask > 0)[..., None]
+    mask_3 = (effective_mask > 0)[..., None]
     return np.where(mask_3, out, image)
 
   def _apply_occlusion_patch(
     self,
     patch: np.ndarray,
-    strong: bool,
+    blur_level: float,
     rng: typing.Optional[random.Random],
   ) -> np.ndarray:
     if patch.size == 0:
@@ -78,16 +88,18 @@ class FaceBlurrer:
     base_color = int(chooser.uniform(0, 255))
     color = (base_color, base_color, base_color)
 
-    use_hatching = strong and chooser.random() < 0.4
-    use_hatching = use_hatching or (not strong and chooser.random() < 0.5)
-    if not use_hatching and (strong or chooser.random() < 0.5):
+    level = max(0.0, min(0.999999, float(blur_level)))
+    use_hatching = chooser.random() < (0.5 - 0.2 * level)
+    if not use_hatching and chooser.random() < (0.5 + 0.45 * level):
       out[:, :] = color
       return out
 
     out[:, :] = color
     hatch_color = tuple(int(v) for v in (255 - base_color, 255 - base_color, 255 - base_color))
-    spacing = chooser.randint(6, 14) if strong else chooser.randint(10, 18)
-    thickness = 2 if strong else 1
+    spacing_min = max(4, int(round(10 - 5 * level)))
+    spacing_max = max(spacing_min + 1, int(round(18 - 8 * level)))
+    spacing = chooser.randint(spacing_min, spacing_max)
+    thickness = 2 if level >= 0.55 else 1
     h, w = out.shape[:2]
     for shift in range(-h, w + h, spacing):
       cv2.line(
@@ -108,6 +120,23 @@ class FaceBlurrer:
           thickness=thickness,
           lineType=cv2.LINE_AA,
         )
+    return out
+
+  def _expand_mask_to_intersecting_blocks(
+    self,
+    mask: np.ndarray,
+    *,
+    block_w: int,
+    block_h: int,
+  ) -> np.ndarray:
+    out = np.zeros_like(mask, dtype=bool)
+    h, w = mask.shape[:2]
+    for y in range(0, h, block_h):
+      y2 = min(y + block_h, h)
+      for x in range(0, w, block_w):
+        x2 = min(x + block_w, w)
+        if np.any(mask[y:y2, x:x2]):
+          out[y:y2, x:x2] = True
     return out
 
   def _mask_bounds(self, mask: np.ndarray) -> typing.Tuple[int, int, int, int]:
