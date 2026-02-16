@@ -21,11 +21,13 @@ class FaceBlurrer:
   def apply(
     self,
     image: np.ndarray,
+    *,
     landmarks: np.ndarray,
     blur_mode: BlurMode,
     mask_mode: BlurMaskMode,
     strong: bool,
     rng: typing.Optional[random.Random] = None,
+    blur_level: float = 1.0,
   ) -> np.ndarray:
     out = image.copy()
     mask = self._build_blur_mask(out.shape[:2], landmarks, mask_mode)
@@ -41,10 +43,16 @@ class FaceBlurrer:
       return out
 
     if blur_mode == BlurMode.GAUSSIAN:
-      kernel = 9 if strong else 5
+      MIN_KERNEL = 0.08
+      MAX_KERNEL = 0.25
+      norm_blur_level = blur_level * (MAX_KERNEL - MIN_KERNEL) / (2 - MIN_KERNEL)
+      kernel = round(
+        min(image.shape[0], image.shape[1]) *
+        (MIN_KERNEL / 2 + norm_blur_level * (1. - MIN_KERNEL / 2))
+      ) * 2 + 1
       patch = cv2.GaussianBlur(patch, (kernel, kernel), 0)
     elif blur_mode == BlurMode.UNIFORM:
-      scale = 0.15 if strong else 0.3
+      scale = (6 + 14 * blur_level) / max(x2 - x1, y2 - y1)
       down_w = max(1, int((x2 - x1) * scale))
       down_h = max(1, int((y2 - y1) * scale))
       patch = cv2.resize(patch, (down_w, down_h), interpolation=cv2.INTER_LINEAR)
