@@ -27,7 +27,7 @@ class FaceBlurrer:
     mask_mode: BlurMaskMode,
     strong: bool,
     rng: typing.Optional[random.Random] = None,
-    blur_level: float = 1.0,
+    blur_level: float = 0.0,
   ) -> np.ndarray:
     out = image.copy()
     mask = self._build_blur_mask(out.shape[:2], landmarks, mask_mode)
@@ -90,10 +90,24 @@ class FaceBlurrer:
     thickness = 2 if strong else 1
     h, w = out.shape[:2]
     for shift in range(-h, w + h, spacing):
-      cv2.line(out, (shift, 0), (shift - h, h), hatch_color, thickness=thickness, lineType=cv2.LINE_AA)
+      cv2.line(
+        out,
+        (shift, 0),
+        (shift - h, h),
+        hatch_color,
+        thickness=thickness,
+        lineType=cv2.LINE_AA,
+      )
     if chooser.random() < 0.35:
       for shift in range(0, w + h, spacing * 2):
-        cv2.line(out, (shift, h), (shift - h, 0), hatch_color, thickness=thickness, lineType=cv2.LINE_AA)
+        cv2.line(
+          out,
+          (shift, h),
+          (shift - h, 0),
+          hatch_color,
+          thickness=thickness,
+          lineType=cv2.LINE_AA,
+        )
     return out
 
   def _mask_bounds(self, mask: np.ndarray) -> typing.Tuple[int, int, int, int]:
