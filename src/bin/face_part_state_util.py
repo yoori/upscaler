@@ -202,6 +202,7 @@ def _evaluate_detected_faces(
       center_y = max(0.0, min(1.0, center_y))
 
       part_crop = _extract_part_crop(face_crop, center_x, center_y, part)
+      cv2.imwrite("./debug/part_" + str(part) + ".jpg", part_crop)
       part_results[part] = evaluator.evaluate(
         part_image_bgr=part_crop,
         part=typing.cast(typing.Literal["eyes", "nose", "mouth"], part),
