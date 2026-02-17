@@ -43,19 +43,28 @@ class FaceBlurrer:
 
     effective_mask = mask
 
+    level = self._clamp_blur_level(blur_level)
+
     if blur_mode == BlurMode.GAUSSIAN:
-      MIN_KERNEL = 0.08
-      MAX_KERNEL = 0.25
-      norm_blur_level = blur_level * (MAX_KERNEL - MIN_KERNEL) / (2 - MIN_KERNEL)
-      kernel = round(
-        min(image.shape[0], image.shape[1]) *
-        (MIN_KERNEL / 2 + norm_blur_level * (1. - MIN_KERNEL / 2))
-      ) * 2 + 1
+      target_kernel = int(round(7 + level * (image.shape[1] - 7)))
+      kernel = self._odd_at_least_one(target_kernel)
       patch = cv2.GaussianBlur(patch, (kernel, kernel), 0)
     elif blur_mode == BlurMode.UNIFORM:
-      scale = (6 + 14 * blur_level) / max(x2 - x1, y2 - y1)
-      down_w = max(1, int((x2 - x1) * scale))
-      down_h = max(1, int((y2 - y1) * scale))
+      patch_h, patch_w = patch.shape[:2]
+      max_side = max(patch_w, patch_h)
+      min_side = min(patch_w, patch_h)
+      level0_side = max(8.0, 0.25 * max_side)
+      level1_side = 8.0
+      target_side = level0_side + level * (level1_side - level0_side)
+      down_long_side = max(1, int(round(target_side)))
+      ratio = down_long_side / max(1, max_side)
+      down_w = max(1, int(round(patch_w * ratio)))
+      down_h = max(1, int(round(patch_h * ratio)))
+      if min_side >= 8 and down_w == patch_w and down_h == patch_h:
+        if patch_w >= patch_h:
+          down_w = max(1, patch_w - 1)
+        else:
+          down_h = max(1, patch_h - 1)
       pixelated = cv2.resize(patch, (down_w, down_h), interpolation=cv2.INTER_LINEAR)
       pixelated = cv2.resize(pixelated, (x2 - x1, y2 - y1), interpolation=cv2.INTER_NEAREST)
 
@@ -68,11 +77,18 @@ class FaceBlurrer:
       effective_mask = np.zeros_like(mask, dtype=np.uint8)
       effective_mask[y1:y2, x1:x2] = patch_mask.astype(np.uint8) * 255
     else:
-      patch = self._apply_occlusion_patch(patch, blur_level=blur_level, rng=rng)
+      patch = self._apply_occlusion_patch(patch, blur_level=level, rng=rng)
 
     out[y1:y2, x1:x2] = patch
     mask_3 = (effective_mask > 0)[..., None]
     return np.where(mask_3, out, image)
+
+  def _clamp_blur_level(self, blur_level: float) -> float:
+    return max(0.0, min(1.0, float(blur_level)))
+
+  def _odd_at_least_one(self, value: int) -> int:
+    v = max(1, int(value))
+    return v if v % 2 == 1 else v + 1
 
   def _apply_occlusion_patch(
     self,

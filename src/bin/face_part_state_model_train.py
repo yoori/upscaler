@@ -16,7 +16,6 @@ def train(args: argparse.Namespace):
     repeat=args.repeat,
     blur_probability=args.blur_probability,
     occlusion_probability=args.occlusion_probability,
-    uncertain_probability=args.uncertain_probability,
     seed=args.seed,
   )
 
@@ -36,7 +35,7 @@ def train(args: argparse.Namespace):
 
 def build_argparser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(
-    description="Train MobileNetV3-Large for facial part state classification (visible/occluded/blurred/uncertain)."
+    description="Train MobileNetV3-Large for facial part state classification (visible/blurred)."
   )
   parser.add_argument("--images-dir", required=True, help="Directory with face photos.")
   parser.add_argument("--output", default="artifacts/mobilenet_part_state.pth", help="Output checkpoint path.")
@@ -52,7 +51,6 @@ def build_argparser() -> argparse.ArgumentParser:
   parser.add_argument("--repeat", type=int, default=3, help="Multiplier for each face-part sample.")
   parser.add_argument("--blur-probability", type=float, default=0.28)
   parser.add_argument("--occlusion-probability", type=float, default=0.24)
-  parser.add_argument("--uncertain-probability", type=float, default=0.12)
   parser.add_argument("--seed", type=int, default=42)
   return parser
 

@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import torch
 
-from upscaler.face_part_state_dataset import FacePartStateDataset, PARTS, STATES
+from upscaler.face_part_state_dataset import FacePartStateDataset, PARTS
 from upscaler.face_part_state_evaluator import FacePartStateEvaluator
 from upscaler.face_part_state_model_trainer import FacePartStateModelTrainer
 
@@ -38,7 +38,6 @@ def _build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--repeat", type=int, default=1)
   parser.add_argument("--blur-probability", type=float, default=0.28)
   parser.add_argument("--occlusion-probability", type=float, default=0.24)
-  parser.add_argument("--uncertain-probability", type=float, default=0.12)
   parser.add_argument("--seed", type=int, default=42)
   return parser
 
@@ -69,7 +68,6 @@ def main() -> int:
     repeat=args.repeat,
     blur_probability=args.blur_probability,
     occlusion_probability=args.occlusion_probability,
-    uncertain_probability=args.uncertain_probability,
     seed=args.seed,
   )
 
@@ -96,15 +94,18 @@ def main() -> int:
     image_tensor, coords_tensor, part_tensor, state_tensor = dataset[idx]
     image_bgr = _tensor_to_bgr_image(image_tensor)
     part_name = PARTS[int(part_tensor.item())]
-    expected_state = STATES[int(state_tensor.item())]
+    expected_visible, expected_blurred = [float(v) for v in state_tensor.tolist()]
     coords = (float(coords_tensor[0].item()), float(coords_tensor[1].item()))
 
     for _ in range(args.n):
       prediction = evaluator.evaluate(image_bgr, part_name, coords=coords)
-      predicted_state = str(prediction["predicted_state"])
-      if predicted_state == expected_state:
+      predicted_visible = float(prediction["state_scores"].get("visible", 0.0))
+      predicted_blurred = float(prediction["state_scores"].get("blurred", 0.0))
+      pred_visible_bin = 1.0 if predicted_visible >= 0.5 else 0.0
+      pred_blurred_bin = 1.0 if predicted_blurred >= 0.5 else 0.0
+      if pred_visible_bin == (1.0 if expected_visible >= 0.5 else 0.0) and pred_blurred_bin == (1.0 if expected_blurred >= 0.5 else 0.0):
         success += 1
-      elif expected_state != "visible" and predicted_state != "visible":
+      elif pred_blurred_bin == (1.0 if expected_blurred >= 0.5 else 0.0):
         light_fail += 1
       else:
         fail += 1

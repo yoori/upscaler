@@ -9,7 +9,7 @@ from torchvision.models import mobilenet_v3_large
 FacePartName = typing.Literal["eyes", "nose", "mouth"]
 
 DEFAULT_FACE_PARTS: typing.Tuple[str, ...] = ("eyes", "nose", "mouth")
-DEFAULT_FACE_PART_STATES: typing.Tuple[str, ...] = ("visible", "occluded", "blurred", "uncertain")
+DEFAULT_FACE_PART_STATES: typing.Tuple[str, ...] = ("visible", "blurred")
 
 
 def _clamp_norm(value: float) -> float:
@@ -107,7 +107,10 @@ class FacePartStateEvaluator:
 
     with torch.no_grad():
       logits = self._model(image_t, coords_t, part_t)
-      probabilities = torch.softmax(logits, dim=1)[0].detach().cpu().numpy()
+      if len(self.states) == 2:
+        probabilities = torch.sigmoid(logits)[0].detach().cpu().numpy()
+      else:
+        probabilities = torch.softmax(logits, dim=1)[0].detach().cpu().numpy()
 
     state_idx = int(np.argmax(probabilities))
     state_scores = {self.states[i]: float(probabilities[i]) for i in range(len(self.states))}

@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import torch
 
-from upscaler.face_part_state_dataset import FacePartStateDataset, PARTS, STATES
+from upscaler.face_part_state_dataset import FacePartStateDataset, PARTS
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -22,7 +22,6 @@ def _build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--repeat", type=int, default=3)
   parser.add_argument("--blur-probability", type=float, default=0.8)
   parser.add_argument("--occlusion-probability", type=float, default=0.1)
-  parser.add_argument("--uncertain-probability", type=float, default=0.1)
   parser.add_argument("--seed", type=int, default=42)
   return parser
 
@@ -64,7 +63,6 @@ def main() -> int:
     repeat=args.repeat,
     blur_probability=args.blur_probability,
     occlusion_probability=args.occlusion_probability,
-    uncertain_probability=args.uncertain_probability,
     seed=args.seed,
   )
 
@@ -76,7 +74,8 @@ def main() -> int:
     meta, _ = dataset.samples[index]
 
     part_name = PARTS[int(part_tensor.item())]
-    state_name = STATES[int(state_tensor.item())]
+    visible, blurred = [float(v) for v in state_tensor.tolist()]
+    state_name = f"v{visible:.2f}_b{blurred:.2f}"
     original_name = meta.image_path.stem
 
     out_path = _unique_output_path(args.output_dir, f"{original_name}_{part_name}_{state_name}")

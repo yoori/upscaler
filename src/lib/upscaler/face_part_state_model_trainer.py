@@ -75,32 +75,32 @@ class FacePartStateModelTrainer:
     model = MobileNetPartState().to(self.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
-    best_acc = -1.0
+    best_score = -1.0
     self.output_path.parent.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, self.epochs + 1):
-      train_loss, train_acc = self._run_epoch(model, train_loader, optimizer)
-      val_loss, val_acc = self._run_epoch(model, val_loader, None)
+      train_loss, train_score = self._run_epoch(model, train_loader, optimizer)
+      val_loss, val_score = self._run_epoch(model, val_loader, None)
 
       print(
-        f"epoch={epoch:03d} train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-        f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
+        f"epoch={epoch:03d} train_loss={train_loss:.4f} train_score={train_score:.4f} "
+        f"val_loss={val_loss:.4f} val_score={val_score:.4f}"
       )
 
-      if val_acc > best_acc:
-        best_acc = val_acc
+      if val_score > best_score:
+        best_score = val_score
         torch.save(
           {
             "model_state": model.state_dict(),
             "parts": PARTS,
             "states": STATES,
             "image_size": image_size,
-            "best_val_acc": best_acc,
+            "best_val_score": best_score,
           },
           self.output_path,
         )
 
-    print(f"Best val_acc={best_acc:.4f}. Model saved to: {self.output_path}")
+    print(f"Best val_score={best_score:.4f}. Model saved to: {self.output_path}")
     return self.output_path
 
   def _build_loaders(self, dataset: Dataset) -> typing.Tuple[DataLoader, DataLoader]:
@@ -140,7 +140,7 @@ class FacePartStateModelTrainer:
 
       with torch.set_grad_enabled(is_train):
         logits = model(images, coords, parts)
-        loss = F.cross_entropy(logits, targets)
+        loss = F.binary_cross_entropy_with_logits(logits, targets)
         if is_train:
           optimizer.zero_grad()
           loss.backward()
@@ -149,6 +149,8 @@ class FacePartStateModelTrainer:
       batch_size = images.size(0)
       loss_sum += loss.item() * batch_size
       total += batch_size
-      correct += (logits.argmax(dim=1) == targets).sum().item()
+      probs = torch.sigmoid(logits)
+      preds = (probs >= 0.5).to(dtype=targets.dtype)
+      correct += (preds == targets).all(dim=1).sum().item()
 
     return loss_sum / max(1, total), correct / max(1, total)

@@ -14,7 +14,7 @@ from .face_blurrer import BlurMaskMode, BlurMode, FaceBlurrer
 
 
 PARTS = ("eyes", "nose", "mouth")
-STATES = ("visible", "occluded", "blurred", "uncertain")
+STATES = ("visible", "blurred")
 VALID_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
@@ -39,7 +39,6 @@ class FacePartStateDataset(Dataset):
     repeat: int = 3,
     blur_probability: float = 0.80,
     occlusion_probability: float = 0.10,
-    uncertain_probability: float = 0.10,
     seed: int = 42,
   ):
     self.images_dir = images_dir
@@ -49,7 +48,6 @@ class FacePartStateDataset(Dataset):
     self.repeat = max(1, repeat)
     self.blur_probability = blur_probability
     self.occlusion_probability = occlusion_probability
-    self.uncertain_probability = uncertain_probability
     self.rng = random.Random(seed)
     self.face_blurrer = FaceBlurrer()
 
@@ -195,8 +193,15 @@ class FacePartStateDataset(Dataset):
     center_x = max(0.0, min(1.0, center_x))
     center_y = max(0.0, min(1.0, center_y))
 
-    state_id = self._sample_state()
-    face_augmented = self._apply_state(face_crop, state_id, part_id, landmarks_face_crop)
+    augmentation_mode = self._sample_augmentation_mode()
+    blur_level = self.rng.random()
+    face_augmented, labels = self._apply_state(
+      face_crop,
+      augmentation_mode,
+      part_id,
+      landmarks_face_crop,
+      blur_level=blur_level,
+    )
     organ_crop = self._extract_part_crop(face_augmented, center_x, center_y, part_id, landmarks_face_crop)
 
     organ_crop = cv2.cvtColor(organ_crop, cv2.COLOR_BGR2RGB)
@@ -207,7 +212,7 @@ class FacePartStateDataset(Dataset):
 
     coords_tensor = torch.tensor([center_x, center_y], dtype=torch.float32)
     part_tensor = torch.tensor(part_id, dtype=torch.long)
-    state_tensor = torch.tensor(state_id, dtype=torch.long)
+    state_tensor = torch.tensor(labels, dtype=torch.float32)
     return img_tensor, coords_tensor, part_tensor, state_tensor
 
   def _part_center(self, meta: FaceMeta, part_id: int) -> typing.Tuple[float, float]:
@@ -226,67 +231,46 @@ class FacePartStateDataset(Dataset):
     points[:, 1] -= float(y1)
     return points
 
-  def _sample_state(self) -> int:
+  def _sample_augmentation_mode(self) -> str:
     p = self.rng.random()
-    if p < self.uncertain_probability:
-      return 3
-    if p < self.uncertain_probability + self.occlusion_probability:
-      return 1
-    if p < self.uncertain_probability + self.occlusion_probability + self.blur_probability:
-      return 2
-    return 0
+    if p < self.occlusion_probability:
+      return "occluded"
+    if p < self.occlusion_probability + self.blur_probability:
+      return "blurred"
+    return "visible"
 
   def _apply_state(
     self,
     face_crop: np.ndarray,
-    state_id: int,
+    augmentation_mode: str,
     part_id: int,
     landmarks: np.ndarray,
-  ) -> np.ndarray:
+    *,
+    blur_level: float,
+  ) -> typing.Tuple[np.ndarray, typing.Tuple[float, float]]:
     out = face_crop.copy()
 
-    if state_id == 0:
-      return out
+    if augmentation_mode == "visible":
+      return out, (1.0, 0.0)
 
-    if state_id == 2:
+    if augmentation_mode == "blurred":
       return self.face_blurrer.apply(
         out,
         landmarks=landmarks,
         blur_mode=self._sample_blur_mode(),
         mask_mode=self._sample_mask_mode(part_id),
         rng=self.rng,
-        blur_level=self.rng.random(),
-      )
+        blur_level=blur_level,
+      ), (1.0 - blur_level, 1.0)
 
-    if state_id == 1:
-      return self.face_blurrer.apply(
+    return self.face_blurrer.apply(
         out,
         landmarks=landmarks,
         blur_mode=BlurMode.OCCLUDE,
         mask_mode=self._sample_mask_mode(part_id),
         rng=self.rng,
-        blur_level=self.rng.random(),
-      )
-
-    if self.rng.random() < 0.5:
-      out = self.face_blurrer.apply(
-        out,
-        landmarks=landmarks,
-        blur_mode=self._sample_blur_mode(),
-        mask_mode=self._sample_mask_mode(part_id),
-        rng=self.rng,
-        blur_level=self.rng.random(),
-      )
-    if self.rng.random() < 0.7:
-      out = self.face_blurrer.apply(
-        out,
-        landmarks=landmarks,
-        blur_mode=BlurMode.OCCLUDE,
-        mask_mode=self._sample_mask_mode(part_id),
-        rng=self.rng,
-        blur_level=self.rng.random(),
-      )
-    return out
+        blur_level=blur_level,
+      ), (0.0, 0.0)
 
 
   def _sample_blur_mode(self) -> BlurMode:
