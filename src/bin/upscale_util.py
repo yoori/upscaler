@@ -263,7 +263,13 @@ async def main(
         for step in face_info.steps:
           if step is None:
             continue
-          collage_parts.append((step.image, step.name))
+          step_image = step.image
+          if step.name == "face masks":
+            step_image = _draw_landmark_crosses(
+              step_image,
+              face_info.landmarks_all_face_crop or face_info.landmarks5,
+            )
+          collage_parts.append((step_image, step.name))
 
         if not collage_parts:
           fallback = face_info.visualize(out)
