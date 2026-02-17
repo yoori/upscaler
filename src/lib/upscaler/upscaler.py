@@ -664,7 +664,6 @@ class Upscaler(object):
       params = UpscaleParams()
 
     face_processors = params.resolved_face_processors()
-    print("face_processors: " + str(face_processors))
     result_info = UpscaleInfo(face_processors=face_processors)
 
     if img_bgr is None or img_bgr.ndim != 3 or img_bgr.shape[2] != 3:
