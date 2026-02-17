@@ -10,8 +10,9 @@ import cv2
 import basicsr.archs.rrdbnet_arch
 import realesrgan
 import gfpgan
-import facexlib.utils.face_restoration_helper
 import codeformer.basicsr.archs.codeformer_arch
+
+from .face_searcher import FaceSearcher
 
 
 FaceProcessorName = typing.Literal["codeformer", "gfpgan", "restoreformer", "rollback_diff"]
@@ -60,41 +61,6 @@ class Ellipse:
   center: typing.Tuple[float, float]
   axes: typing.Tuple[float, float]
   angle: float
-
-
-@dataclasses.dataclass(frozen=True)
-class FaceDetection:
-  bbox_px: typing.List[int]
-  bbox_norm: typing.List[float]
-  size_px: int
-  affine_matrix: typing.Optional[np.ndarray]
-
-  def __init__(
-    self,
-    *,
-    bbox_px: typing.List[int],
-    width: int,
-    height: int,
-    affine_matrix: typing.Optional[np.ndarray] = None,
-  ) -> None:
-    x1, y1, x2, y2 = [int(v) for v in bbox_px]
-    object.__setattr__(self, "bbox_px", [x1, y1, x2, y2])
-    object.__setattr__(
-      self,
-      "bbox_norm",
-      [
-        float(x1) / float(width) if width else 0.0,
-        float(y1) / float(height) if height else 0.0,
-        float(x2) / float(width) if width else 0.0,
-        float(y2) / float(height) if height else 0.0,
-      ],
-    )
-    object.__setattr__(
-      self,
-      "size_px",
-      int(min(int(x2 - x1), int(y2 - y1))),
-    )
-    object.__setattr__(self, "affine_matrix", affine_matrix)
 
 
 @dataclasses.dataclass
@@ -613,8 +579,8 @@ class Upscaler(object):
       device=self._device,
     )
 
-    # Face helper (used for align/paste-back for both GFPGAN and CodeFormer)
-    self._face_helper = self._create_face_helper()
+    # Face searcher/helper (used for align/paste-back for both GFPGAN and CodeFormer)
+    self._face_searcher = FaceSearcher(device=self._device)
 
     # GFPGAN (optional)
     if self._gfpgan_weights is not None:
@@ -733,48 +699,6 @@ class Upscaler(object):
       weight=weight,
     )
     return restored
-
-  def _detect_faces(
-    self,
-    img_bgr: np.ndarray,
-    *,
-    only_center_face: bool,
-  ) -> typing.List[FaceDetection]:
-
-    helper = self._face_helper
-    helper.clean_all()
-    helper.read_image(img_bgr)
-    helper.get_face_landmarks_5(
-      only_center_face=only_center_face,
-      eye_dist_threshold=5,
-    )
-    helper.align_warp_face()
-
-    det_faces = getattr(helper, "det_faces", [])
-    affine_matrices = getattr(helper, "affine_matrices", [])
-    aligned_faces: typing.List[FaceDetection] = []
-    h, w = img_bgr.shape[:2]
-    for i, bb in enumerate(det_faces):
-      x1, y1, x2, y2 = bb[:4]
-      bbox_px = [int(x1), int(y1), int(x2), int(y2)]
-      aligned_faces.append(FaceDetection(
-        bbox_px=bbox_px,
-        width=w,
-        height=h,
-        affine_matrix=affine_matrices[i] if i < len(affine_matrices) else None,
-      ))
-    return aligned_faces
-
-  def _create_face_helper(self) -> facexlib.utils.face_restoration_helper.FaceRestoreHelper:
-    return facexlib.utils.face_restoration_helper.FaceRestoreHelper(
-      upscale_factor=1,
-      face_size=512,
-      crop_ratio=(1, 1),
-      det_model="retinaface_resnet50",
-      save_ext="png",
-      use_parse=True,
-      device=self._device,
-    )
 
   def _cv2_ready_bgr(self, img) -> np.ndarray:
     img = np.asarray(img)
@@ -1014,27 +938,16 @@ class Upscaler(object):
     info: UpscaleInfo,
   ) -> typing.Tuple[np.ndarray, UpscaleInfo]:
 
-    helper = self._face_helper
-
-    faces = self._detect_faces(
+    faces = self._face_searcher.get_faces(
       upscaled_bgr,
+      is_bgr=True,
       only_center_face=only_center_face,
     )
 
-    # if mismatch, safe fallback: whole-image GFPGAN if available, else no-op
-    if len(helper.cropped_faces) > 0 and len(faces) != len(helper.cropped_faces):
-      if self._face_enhancer is not None:
-        return (
-          self._apply_gfpgan_whole(
-            upscaled_bgr,
-            weight=gfpgan_weight_normal,
-            only_center_face=only_center_face,
-          ),
-          dataclasses.replace(info, fallback="det_faces != cropped_faces (face_enhancer isn't null)"),
-        )
+    if len(faces) == 0:
       return (
         upscaled_bgr,
-        dataclasses.replace(info, fallback="det_faces != cropped_faces"),
+        dataclasses.replace(info, faces=[]),
       )
 
     restored_faces: typing.List[np.ndarray] = []
@@ -1043,17 +956,18 @@ class Upscaler(object):
     up_h, up_w = upscaled_bgr.shape[:2]
     orig_h, orig_w = original_bgr.shape[:2]
 
-    for i, face_crop in enumerate(helper.cropped_faces):
-      face_detection = faces[i]
+    for i, face_detection in enumerate(faces):
+      face_crop = face_detection.crop
+      if face_crop is None or not face_crop.size:
+        continue
       face_px = face_detection.size_px
       landmarks5 = None
       landmarks_all = None
       eye_ellipse = None
-      all_landmarks_68 = getattr(helper, "all_landmarks_68", None)
-      if all_landmarks_68 is not None and i < len(all_landmarks_68):
-        landmarks = all_landmarks_68[i].astype(float)
-      elif i < len(helper.all_landmarks_5):
-        landmarks = helper.all_landmarks_5[i].astype(float)
+      if face_detection.landmarks_all is not None:
+        landmarks = np.asarray(face_detection.landmarks_all, dtype=float)
+      elif face_detection.landmarks_5 is not None:
+        landmarks = np.asarray(face_detection.landmarks_5, dtype=float)
       else:
         landmarks = None
 
@@ -1300,12 +1214,13 @@ class Upscaler(object):
       restored_faces.extend([self._cv2_ready_bgr(x) for x in local_restored_faces])
       face_infos.append(face_info)
 
-    for rf in restored_faces:
-      helper.add_restored_face(rf)
+    if not restored_faces:
+      return (
+        upscaled_bgr,
+        dataclasses.replace(info, faces=face_infos),
+      )
 
-    helper.get_inverse_affine(None)
-
-    pasted = helper.paste_faces_to_input_image(upsample_img=None)
+    pasted = self._face_searcher.paste_restored_faces(restored_faces)
 
     if fill_debug_images:
       for i, face_info in enumerate(face_infos):
@@ -1314,8 +1229,9 @@ class Upscaler(object):
         detection = faces[i]
         crop_w = 0
         crop_h = 0
-        assert i < len(helper.cropped_faces)
-        crop_h, crop_w = helper.cropped_faces[i].shape[:2]
+        if detection.crop is None or not detection.crop.size:
+          continue
+        crop_h, crop_w = detection.crop.shape[:2]
 
         if detection.affine_matrix is not None and crop_w > 0 and crop_h > 0:
           pasted_face = cv2.warpAffine(
