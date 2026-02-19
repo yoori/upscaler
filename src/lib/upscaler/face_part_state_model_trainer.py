@@ -58,6 +58,7 @@ class FacePartStateModelTrainer:
     train_ratio: float,
     seed: int,
     output_path: pathlib.Path,
+    init_checkpoint_path: typing.Optional[pathlib.Path] = None,
   ):
     self.device = torch.device(device)
     self.batch_size = batch_size
@@ -68,11 +69,16 @@ class FacePartStateModelTrainer:
     self.train_ratio = train_ratio
     self.seed = seed
     self.output_path = output_path
+    self.init_checkpoint_path = init_checkpoint_path
 
   def train(self, dataset: Dataset, *, image_size: int) -> pathlib.Path:
     train_loader, val_loader = self._build_loaders(dataset)
 
     model = MobileNetPartState().to(self.device)
+    if self.init_checkpoint_path is not None:
+      checkpoint = torch.load(self.init_checkpoint_path, map_location=self.device)
+      model.load_state_dict(checkpoint["model_state"])
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
     best_score = -1.0

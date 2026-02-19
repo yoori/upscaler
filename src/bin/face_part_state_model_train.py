@@ -29,6 +29,7 @@ def train(args: argparse.Namespace):
     train_ratio=args.train_ratio,
     seed=args.seed,
     output_path=pathlib.Path(args.output),
+    init_checkpoint_path=pathlib.Path(args.init_checkpoint) if args.init_checkpoint else None,
   )
   trainer.train(dataset, image_size=args.image_size)
 
@@ -39,6 +40,7 @@ def build_argparser() -> argparse.ArgumentParser:
   )
   parser.add_argument("--images-dir", required=True, help="Directory with face photos.")
   parser.add_argument("--output", default="artifacts/mobilenet_part_state.pth", help="Output checkpoint path.")
+  parser.add_argument("--init-checkpoint", help="Path to .pth checkpoint for fine-tuning.")
   parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
   parser.add_argument("--epochs", type=int, default=12)
   parser.add_argument("--batch-size", type=int, default=32)
