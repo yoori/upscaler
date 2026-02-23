@@ -1,4 +1,4 @@
-from .face_detection import FaceDetection
+from .face_detection import FaceDetection, CompareMetrics
 from .face_searcher import FaceSearcher
 from .upscaler import (
   Upscaler,
@@ -14,6 +14,7 @@ __all__ = [
   "FaceProcessor",
   "FaceProcessorName",
   "default_face_processors",
+  "CompareMetrics",
   "FaceDetection",
   "FaceSearcher",
 ]

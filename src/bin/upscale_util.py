@@ -77,13 +77,17 @@ def _with_label(image: typing.Optional[typing.Any], label: str) -> typing.Option
   return labeled
 
 
-def _with_header(image: typing.Optional[typing.Any], header: str) -> typing.Optional[typing.Any]:
+def _with_header(
+  image: typing.Optional[typing.Any],
+  headers: typing.List[str],
+) -> typing.Optional[typing.Any]:
   if image is None:
     return None
   if getattr(image, "size", 0) == 0:
     return None
 
-  strip_h = 34
+  line_h = 24
+  strip_h = 10 + line_h * len(headers)
   out = cv2.copyMakeBorder(
     image,
     strip_h,
@@ -95,22 +99,36 @@ def _with_header(image: typing.Optional[typing.Any], header: str) -> typing.Opti
   )
 
   font = cv2.FONT_HERSHEY_SIMPLEX
-  text_scale = 0.55
+  text_scale = 0.5
   text_thickness = 1
-  text_size, _ = cv2.getTextSize(header, font, text_scale, text_thickness)
-  text_x = max(8, (out.shape[1] - text_size[0]) // 2)
-  text_y = max(22, (strip_h + text_size[1]) // 2)
-  cv2.putText(
-    out,
-    header,
-    (text_x, text_y),
-    font,
-    text_scale,
-    (20, 20, 20),
-    text_thickness,
-    cv2.LINE_AA,
-  )
+  for idx, line in enumerate(headers):
+    text_size, _ = cv2.getTextSize(line, font, text_scale, text_thickness)
+    text_x = max(8, (out.shape[1] - text_size[0]) // 2)
+    text_y = 20 + idx * line_h
+    cv2.putText(
+      out,
+      line,
+      (text_x, text_y),
+      font,
+      text_scale,
+      (20, 20, 20),
+      text_thickness,
+      cv2.LINE_AA,
+    )
   return out
+
+
+def _format_privacy_blur_subheader(
+  prefix: str,
+  compare_metrics: upscaler.CompareMetrics,
+) -> str:
+  return (
+    f"{prefix}: "
+    f"lap_var_ratio={compare_metrics.lap_var_ratio:.4g}; "
+    f"tenengrad_ratio={compare_metrics.tenengrad_ratio:.4g}; "
+    f"edge_density_ratio={compare_metrics.edge_density_ratio:.4g}; "
+    f"pixel_var_ratio={compare_metrics.pixel_var_ratio:.4g}"
+  )
 
 
 def _overlay_mask(
@@ -298,7 +316,14 @@ async def main(
           f"diff_thr={float(diff_thr):g}; "
           f"diff_min_area={float(diff_min_area):g}"
         )
-        face_img = _with_header(face_img, collage_params)
+        face_img = _with_header(
+          face_img,
+          headers=[
+            collage_params,
+            _format_privacy_blur_subheader("eye blur", face_info.privacy_blur_metrics.eyes_blur.compare),
+            _format_privacy_blur_subheader("face blur", face_info.privacy_blur_metrics.face_blur.compare),
+          ],
+        )
         face_path = os.path.join(output_faces, f"face_{idx}.png")
         cv2.imwrite(face_path, face_img)
 

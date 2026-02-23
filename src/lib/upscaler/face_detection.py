@@ -47,7 +47,7 @@ class ZoneBlurMetrics:
 
 @dataclasses.dataclass(frozen=True)
 class FacePrivacyBlurMetrics:
-  eyes_privacy: ZoneBlurMetrics
+  eyes_blur: ZoneBlurMetrics
   face_blur: ZoneBlurMetrics
   outside_parts: RawBlurMetrics
 
@@ -288,7 +288,7 @@ class FaceDetection:
       valid_reference=0.0,
     )
     return FacePrivacyBlurMetrics(
-      eyes_privacy=empty_zone,
+      eyes_blur=empty_zone,
       face_blur=empty_zone,
       outside_parts=self._nan_raw_metrics(),
     )
@@ -320,7 +320,13 @@ class FaceDetection:
     eye_mask = self.get_eye_mask((h, w))
     mouth_mask = self.get_mouth_mask((h, w))
     nose_mask = self.get_nose_zone_mask((h, w))
-    parts_union_mask = cv2.bitwise_or(cv2.bitwise_or((eye_mask > 0).astype(np.uint8), (mouth_mask > 0).astype(np.uint8)), (nose_mask > 0).astype(np.uint8))
+    parts_union_mask = cv2.bitwise_or(
+      cv2.bitwise_or(
+        (eye_mask > 0).astype(np.uint8),
+        (mouth_mask > 0).astype(np.uint8)
+      ),
+      (nose_mask > 0).astype(np.uint8)
+    )
     if np.count_nonzero(parts_union_mask) <= 0:
       background_mask = np.ones((h, w), dtype=np.uint8)
     else:
@@ -346,7 +352,12 @@ class FaceDetection:
     eyes_metrics = ZoneBlurMetrics(
       zone=eye_zone_raw,
       reference=outside_raw,
-      compare=self._compare_metrics(zone=eye_zone_raw, reference=outside_raw, eps=float(eps), valid_reference=outside_valid),
+      compare=self._compare_metrics(
+        zone=eye_zone_raw,
+        reference=outside_raw,
+        eps=float(eps),
+        valid_reference=outside_valid,
+      ),
       zone_area_ratio=eye_area_ratio,
       reference_area_ratio=outside_area_ratio,
       zone_min_size_px=eye_min_side,
@@ -367,7 +378,12 @@ class FaceDetection:
     face_metrics = ZoneBlurMetrics(
       zone=face_zone_raw,
       reference=outside_raw,
-      compare=self._compare_metrics(zone=face_zone_raw, reference=outside_raw, eps=float(eps), valid_reference=outside_valid),
+      compare=self._compare_metrics(
+        zone=face_zone_raw,
+        reference=outside_raw,
+        eps=float(eps),
+        valid_reference=outside_valid
+      ),
       zone_area_ratio=face_area_ratio,
       reference_area_ratio=outside_area_ratio,
       zone_min_size_px=face_min_side,
@@ -377,7 +393,7 @@ class FaceDetection:
     )
 
     return FacePrivacyBlurMetrics(
-      eyes_privacy=eyes_metrics,
+      eyes_blur=eyes_metrics,
       face_blur=face_metrics,
       outside_parts=outside_raw,
     )
