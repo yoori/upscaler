@@ -12,7 +12,8 @@ import realesrgan
 import gfpgan
 import codeformer.basicsr.archs.codeformer_arch
 
-from .face_searcher import Ellipse, FaceDetection, FaceSearcher
+from .face_detection import Ellipse, FaceDetection
+from .face_searcher import FaceSearcher
 
 
 FaceProcessorName = typing.Literal["codeformer", "gfpgan", "restoreformer", "rollback_diff"]

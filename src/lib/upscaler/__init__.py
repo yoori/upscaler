@@ -1,4 +1,5 @@
-from .face_searcher import FaceDetection, FaceSearcher
+from .face_detection import FaceDetection
+from .face_searcher import FaceSearcher
 from .upscaler import (
   Upscaler,
   UpscaleParams,
