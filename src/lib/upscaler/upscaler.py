@@ -12,7 +12,7 @@ import realesrgan
 import gfpgan
 import codeformer.basicsr.archs.codeformer_arch
 
-from .face_detection import Ellipse, FaceDetection
+from .face_detection import Ellipse, FaceDetection, FacePrivacyBlurMetrics
 from .face_searcher import FaceSearcher
 
 
@@ -75,6 +75,7 @@ class UpscaleFaceInfo:
   eye_ellipse_face_crop: typing.Optional[Ellipse] = None
   mouth_ellipse_face_crop: typing.Optional[Ellipse] = None
   steps: typing.List[UpscaleFaceInfoStep] = dataclasses.field(default_factory=list)
+  privacy_blur_metrics: typing.Optional[FacePrivacyBlurMetrics] = None
 
   def _normalized_bbox(self) -> typing.Tuple[float, float, float, float]:
     x1_f, y1_f, x2_f, y2_f = [float(v) for v in self.bbox]
@@ -213,11 +214,12 @@ class UpscaleFaceInfo:
     return self._as_face_detection().get_nose_zone_mask(face_crop_shape)
 
   def _as_face_detection(self) -> FaceDetection:
-    eye_ellipse = self.eye_ellipse_face_crop if self.eye_ellipse_face_crop is not None else self.eye_ellipse
+    eye_ellipse = (
+      self.eye_ellipse_face_crop if self.eye_ellipse_face_crop is not None
+      else self.eye_ellipse
+    )
     return FaceDetection(
-      bbox_px=[0, 0, 1, 1],
-      width=1,
-      height=1,
+      bbox_norm=[0.0, 0.0, 1.0, 1.0],
       landmarks_all_face_crop=self.landmarks_all_face_crop,
       eye_ellipse=eye_ellipse,
       mouth_ellipse=self.mouth_ellipse_face_crop,
@@ -404,7 +406,9 @@ class UpscaleParams:
   # extra rollback-mask dilation as fraction of face crop width
   rollback_extend: float = 0.01
 
-  face_processors: typing.List[FaceProcessor] = dataclasses.field(default_factory=default_face_processors)
+  face_processors: typing.List[FaceProcessor] = dataclasses.field(
+    default_factory=default_face_processors
+  )
 
   def resolved_face_processors(self) -> typing.List[FaceProcessor]:
     return list(self.face_processors)
@@ -639,7 +643,11 @@ class Upscaler(object):
       return None
     out = self._cv2_ready_bgr(base_image).copy()
 
-    def _apply(mask: typing.Optional[np.ndarray], color: typing.Tuple[int, int, int], alpha: float) -> None:
+    def _apply(
+      mask: typing.Optional[np.ndarray],
+      color: typing.Tuple[int, int, int],
+      alpha: float
+    ) -> None:
       nonlocal out
       if mask is None or getattr(mask, "size", 0) == 0:
         return
@@ -647,7 +655,11 @@ class Upscaler(object):
       if local_mask.ndim == 3:
         local_mask = cv2.cvtColor(local_mask, cv2.COLOR_BGR2GRAY)
       if local_mask.shape[:2] != out.shape[:2]:
-        local_mask = cv2.resize(local_mask, (out.shape[1], out.shape[0]), interpolation=cv2.INTER_NEAREST)
+        local_mask = cv2.resize(
+          local_mask,
+          (out.shape[1], out.shape[0]),
+          interpolation=cv2.INTER_NEAREST,
+        )
       mask_bool = local_mask > 0
       if not np.any(mask_bool):
         return
@@ -942,6 +954,22 @@ class Upscaler(object):
             int(face_crop.shape[1]) if face_crop is not None and face_crop.size else 0,
           ),
         )
+      privacy_blur_metrics = None
+      if original_crop is not None and original_crop.size:
+        original_face_detection = FaceDetection(
+          bbox_norm=bbox_norm,
+          crop=original_crop,
+          landmarks_all_face_crop=(
+            transformed_landmarks.tolist() if transformed_landmarks is not None else None
+          ),
+          eye_ellipse=eye_ellipse_face_crop,
+          mouth_ellipse=mouth_ellipse_face_crop,
+        )
+        privacy_blur_metrics = original_face_detection.compute_privacy_blur_metrics(
+          face_crop=original_crop,
+          rgb_input=False,
+        )
+
       face_info = UpscaleFaceInfo(
         bbox=bbox_norm,
         face_px=face_px,
@@ -954,9 +982,13 @@ class Upscaler(object):
         eye_ellipse=eye_ellipse,
         eye_ellipse_face_crop=eye_ellipse_face_crop,
         mouth_ellipse_face_crop=mouth_ellipse_face_crop,
+        privacy_blur_metrics=privacy_blur_metrics,
       )
 
-      crop_on_upscaled = self._cv2_ready_bgr(face_crop) if face_crop is not None and face_crop.size else None
+      crop_on_upscaled = (
+        self._cv2_ready_bgr(face_crop) if face_crop is not None and face_crop.size
+        else None
+      )
       strong_change_mask: typing.Optional[np.ndarray] = None
       strong_change_mask_color: typing.Optional[np.ndarray] = None
       face_crop_shape = (
@@ -993,7 +1025,10 @@ class Upscaler(object):
           if self._face_enhancer is None:
             continue
           gfpgan_small_px = int(processor.max_apply_px) if processor.max_apply_px is not None else None
-          w = gfpgan_weight_small if (gfpgan_small_px is not None and face_px < gfpgan_small_px) else gfpgan_weight_normal
+          w = (
+            gfpgan_weight_small if (gfpgan_small_px is not None and face_px < gfpgan_small_px)
+            else gfpgan_weight_normal
+          )
           _, local_restored_faces, _ = self._face_enhancer.enhance(
             current_face,
             has_aligned=True,
