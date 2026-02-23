@@ -12,7 +12,7 @@ import realesrgan
 import gfpgan
 import codeformer.basicsr.archs.codeformer_arch
 
-from .face_searcher import FaceSearcher
+from .face_searcher import Ellipse, FaceDetection, FaceSearcher
 
 
 FaceProcessorName = typing.Literal["codeformer", "gfpgan", "restoreformer", "rollback_diff"]
@@ -54,13 +54,6 @@ def _bbox_norm_to_pixels(
     int(round(x2_f * width)),
     int(round(y2_f * height)),
   )
-
-
-@dataclasses.dataclass(frozen=True)
-class Ellipse:
-  center: typing.Tuple[float, float]
-  axes: typing.Tuple[float, float]
-  angle: float
 
 
 @dataclasses.dataclass
@@ -181,39 +174,7 @@ class UpscaleFaceInfo:
     self,
     face_crop_shape: typing.Tuple[int, int],
   ) -> np.ndarray:
-    """
-    Return a binary (0/255) eye mask in local face-crop coordinates.
-    Shape matches face crop / strong-change masks.
-    """
-    height, width = face_crop_shape
-
-    if width <= 0 or height <= 0:
-      return np.zeros((0, 0), dtype=np.uint8)
-
-    ellipse = self.eye_ellipse_face_crop
-    if ellipse is None:
-      ellipse = self.eye_ellipse
-      if ellipse is None:
-        return np.zeros((height, width), dtype=np.uint8)
-
-      x1_f, y1_f, x2_f, y2_f = self._normalized_bbox()
-
-      box_w = x2_f - x1_f
-      box_h = y2_f - y1_f
-      if box_w <= 1e-8 or box_h <= 1e-8:
-        return np.zeros((height, width), dtype=np.uint8)
-
-      cx_local_norm = (float(ellipse.center[0]) - x1_f) / box_w
-      cy_local_norm = (float(ellipse.center[1]) - y1_f) / box_h
-      ax_local_norm = float(ellipse.axes[0]) / box_w
-      ay_local_norm = float(ellipse.axes[1]) / box_h
-      ellipse = Ellipse(
-        center=(cx_local_norm, cy_local_norm),
-        axes=(ax_local_norm, ay_local_norm),
-        angle=float(ellipse.angle),
-      )
-
-    return self._render_face_crop_ellipse_mask(ellipse, width=width, height=height)
+    return self._as_face_detection().get_eye_mask(face_crop_shape)
 
   @staticmethod
   def _render_face_crop_ellipse_mask(
@@ -242,100 +203,24 @@ class UpscaleFaceInfo:
     self,
     face_crop_shape: typing.Tuple[int, int],
   ) -> np.ndarray:
-    height, width = face_crop_shape
-    if width <= 0 or height <= 0:
-      return np.zeros((0, 0), dtype=np.uint8)
-    return self._render_face_crop_ellipse_mask(self.mouth_ellipse_face_crop, width=width, height=height)
+    return self._as_face_detection().get_mouth_mask(face_crop_shape)
 
   def get_nose_zone_mask_for_face_crop(
     self,
     face_crop_shape: typing.Tuple[int, int],
   ) -> np.ndarray:
-    height, width = face_crop_shape
-    if width <= 0 or height <= 0:
-      return np.zeros((0, 0), dtype=np.uint8)
+    return self._as_face_detection().get_nose_zone_mask(face_crop_shape)
 
-    points_local: typing.Optional[typing.List[typing.Tuple[float, float]]] = None
-    nose_local: typing.Optional[typing.Tuple[float, float]] = None
-    mouth_left_local: typing.Optional[typing.Tuple[float, float]] = None
-    mouth_right_local: typing.Optional[typing.Tuple[float, float]] = None
-
-    if self.landmarks_all_face_crop is not None and len(self.landmarks_all_face_crop) >= 5:
-      points = np.asarray(self.landmarks_all_face_crop, dtype=np.float32).reshape(-1, 2)
-      left_eye, right_eye, nose, mouth_left, mouth_right = points[:5]
-      points_local = [
-        (float(left_eye[0]), float(left_eye[1])),
-        (float(right_eye[0]), float(right_eye[1])),
-        (float(nose[0]), float(nose[1])),
-        (float(mouth_right[0]), float(mouth_right[1])),
-        (float(mouth_left[0]), float(mouth_left[1])),
-      ]
-      nose_local = (float(nose[0]), float(nose[1]))
-      mouth_left_local = (float(mouth_left[0]), float(mouth_left[1]))
-      mouth_right_local = (float(mouth_right[0]), float(mouth_right[1]))
-    elif self.landmarks5 is not None and len(self.landmarks5) >= 5:
-      x1_f, y1_f, x2_f, y2_f = self._normalized_bbox()
-      box_w = x2_f - x1_f
-      box_h = y2_f - y1_f
-      if box_w <= 1e-8 or box_h <= 1e-8:
-        return np.zeros((height, width), dtype=np.uint8)
-      points = np.asarray(self.landmarks5, dtype=np.float32).reshape(-1, 2)
-      left_eye, right_eye, nose, mouth_left, mouth_right = points[:5]
-      points_local = [
-        ((float(left_eye[0]) - x1_f) / box_w, (float(left_eye[1]) - y1_f) / box_h),
-        ((float(right_eye[0]) - x1_f) / box_w, (float(right_eye[1]) - y1_f) / box_h),
-        ((float(nose[0]) - x1_f) / box_w, (float(nose[1]) - y1_f) / box_h),
-        ((float(mouth_right[0]) - x1_f) / box_w, (float(mouth_right[1]) - y1_f) / box_h),
-        ((float(mouth_left[0]) - x1_f) / box_w, (float(mouth_left[1]) - y1_f) / box_h),
-      ]
-      nose_local = ((float(nose[0]) - x1_f) / box_w, (float(nose[1]) - y1_f) / box_h)
-      mouth_left_local = ((float(mouth_left[0]) - x1_f) / box_w, (float(mouth_left[1]) - y1_f) / box_h)
-      mouth_right_local = ((float(mouth_right[0]) - x1_f) / box_w, (float(mouth_right[1]) - y1_f) / box_h)
-
-    if not points_local:
-      return np.zeros((height, width), dtype=np.uint8)
-
-    polygon = np.asarray(
-      [[int(round(x * width)), int(round(y * height))] for x, y in points_local],
-      dtype=np.int32,
+  def _as_face_detection(self) -> FaceDetection:
+    eye_ellipse = self.eye_ellipse_face_crop if self.eye_ellipse_face_crop is not None else self.eye_ellipse
+    return FaceDetection(
+      bbox_px=[0, 0, 1, 1],
+      width=1,
+      height=1,
+      landmarks_all_face_crop=self.landmarks_all_face_crop,
+      eye_ellipse=eye_ellipse,
+      mouth_ellipse=self.mouth_ellipse_face_crop,
     )
-    if polygon.ndim != 2 or polygon.shape[1] != 2 or polygon.shape[0] < 3:
-      return np.zeros((height, width), dtype=np.uint8)
-
-    polygon[:, 0] = np.clip(polygon[:, 0], 0, max(0, width - 1))
-    polygon[:, 1] = np.clip(polygon[:, 1], 0, max(0, height - 1))
-
-    # cv2.fillConvexPoly expects points in contour order.
-    # Build a convex hull first so the resulting shape is order-invariant
-    # and always covers all triangles formed by landmark points.
-    hull = cv2.convexHull(polygon)
-    if hull is None or hull.size == 0:
-      return np.zeros((height, width), dtype=np.uint8)
-    hull = hull.reshape(-1, 2)
-    if hull.shape[0] < 3:
-      return np.zeros((height, width), dtype=np.uint8)
-
-    mask = np.zeros((height, width), dtype=np.uint8)
-    cv2.fillConvexPoly(mask, hull, 255)
-
-    if nose_local is not None and mouth_left_local is not None and mouth_right_local is not None:
-      nose_x = int(round(float(nose_local[0]) * width))
-      nose_y = int(round(float(nose_local[1]) * height))
-      nose_x = int(np.clip(nose_x, 0, max(0, width - 1)))
-      nose_y = int(np.clip(nose_y, 0, max(0, height - 1)))
-
-      mouth_lx = float(mouth_left_local[0]) * width
-      mouth_ly = float(mouth_left_local[1]) * height
-      mouth_rx = float(mouth_right_local[0]) * width
-      mouth_ry = float(mouth_right_local[1]) * height
-
-      dist_to_mouth_left = float(np.hypot(mouth_lx - float(nose_x), mouth_ly - float(nose_y)))
-      dist_to_mouth_right = float(np.hypot(mouth_rx - float(nose_x), mouth_ry - float(nose_y)))
-      min_dist_to_mouth = min(dist_to_mouth_left, dist_to_mouth_right)
-      nose_radius = max(1, int(round(min_dist_to_mouth / 3.0)))
-      cv2.circle(mask, (nose_x, nose_y), nose_radius, 255, -1)
-
-    return mask
 
   def get_full_face_mask(
     self,
