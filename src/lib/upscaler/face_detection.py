@@ -244,11 +244,17 @@ class FaceDetection:
     gray_vals = gray[roi_mask_bool]
     edges = np.count_nonzero((canny > 0) & roi_mask_bool)
 
+    # Keep all metrics that depend on per-pixel magnitude normalized by the
+    # number of masked pixels they are computed over.
+    lap_var = float(np.sum((lap_vals - np.mean(lap_vals)) ** 2) / float(masked_count)) if lap_vals.size else np.nan
+    tenengrad = float(np.sum(tenengrad_vals) / float(masked_count)) if tenengrad_vals.size else np.nan
+    pixel_var = float(np.sum((gray_vals - np.mean(gray_vals)) ** 2) / float(masked_count)) if gray_vals.size else np.nan
+
     metrics = RawBlurMetrics(
-      lap_var=float(np.var(lap_vals)) if lap_vals.size else np.nan,
-      tenengrad=float(np.mean(tenengrad_vals)) if tenengrad_vals.size else np.nan,
+      lap_var=lap_var,
+      tenengrad=tenengrad,
       edge_density=float(edges) / float(masked_count) if masked_count > 0 else np.nan,
-      pixel_var=float(np.var(gray_vals)) if gray_vals.size else np.nan,
+      pixel_var=pixel_var,
     )
     return metrics, area_ratio, min_side, 1.0
 
