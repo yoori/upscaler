@@ -21,6 +21,7 @@ class PrivacyBlurLabelApp:
 
     self.has_eyes_privacy_blur = tk.BooleanVar(value=False)
     self.has_face_privacy_blur = tk.BooleanVar(value=False)
+    self.has_face_privacy_blur.trace_add("write", self._on_face_blur_changed)
 
     self.image_title = tk.Label(root, text="", anchor="w", justify="left")
     self.image_title.pack(fill="x", padx=8, pady=(8, 4))
@@ -45,6 +46,13 @@ class PrivacyBlurLabelApp:
 
     tk.Button(
       controls,
+      text="Drop",
+      command=self.on_drop,
+      width=14,
+    ).pack(side="right", padx=(0, 8))
+
+    tk.Button(
+      controls,
       text="Next",
       command=self.on_next,
       width=14,
@@ -63,8 +71,9 @@ class PrivacyBlurLabelApp:
       return
 
     image_path = self.image_paths[self.index]
-    self.has_eyes_privacy_blur.set(False)
-    self.has_face_privacy_blur.set(False)
+    payload = self._load_payload(image_path)
+    self.has_eyes_privacy_blur.set(bool(payload.get("has_eyes_privacy_blur", False)))
+    self.has_face_privacy_blur.set(bool(payload.get("has_face_privacy_blur", False)))
 
     self.image_title.config(
       text=f"[{self.index + 1}/{len(self.image_paths)}] {image_path.name}",
@@ -78,6 +87,20 @@ class PrivacyBlurLabelApp:
     self._current_photo = ImageTk.PhotoImage(image)
     self.image_label.config(image=self._current_photo)
 
+  def _load_payload(self, image_path: pathlib.Path) -> typing.Dict[str, typing.Any]:
+    json_path = image_path.with_suffix(".json")
+    if not json_path.exists():
+      return {}
+
+    try:
+      return typing.cast(typing.Dict[str, typing.Any], json.loads(json_path.read_text()))
+    except json.JSONDecodeError:
+      return {}
+
+  def _on_face_blur_changed(self, *_args: typing.Any) -> None:
+    if self.has_face_privacy_blur.get():
+      self.has_eyes_privacy_blur.set(True)
+
   def on_next(self, _event: typing.Optional[tk.Event] = None) -> None:
     image_path = self.image_paths[self.index]
     payload = {
@@ -87,6 +110,17 @@ class PrivacyBlurLabelApp:
 
     json_path = image_path.with_suffix(".json")
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+    self.index += 1
+    self._show_current_image()
+
+  def on_drop(self) -> None:
+    image_path = self.image_paths[self.index]
+    json_path = image_path.with_suffix(".json")
+
+    if json_path.exists():
+      json_path.unlink()
+    image_path.unlink()
 
     self.index += 1
     self._show_current_image()
@@ -108,14 +142,25 @@ def _build_parser() -> argparse.ArgumentParser:
     default=sorted(IMAGE_EXTENSIONS),
     help="Face image extensions",
   )
+  parser.add_argument(
+    "--revalidate",
+    action="store_true",
+    help="Open all images including those that already have a corresponding .json label",
+  )
   return parser
 
 
-def _collect_pending_images(images_dir: pathlib.Path, extensions: typing.Set[str]) -> typing.List[pathlib.Path]:
+def _collect_pending_images(
+  images_dir: pathlib.Path,
+  extensions: typing.Set[str],
+  revalidate: bool,
+) -> typing.List[pathlib.Path]:
   image_paths = [
     path for path in sorted(images_dir.iterdir())
     if path.is_file() and path.suffix.lower() in extensions
   ]
+  if revalidate:
+    return image_paths
   return [path for path in image_paths if not path.with_suffix(".json").exists()]
 
 
@@ -127,10 +172,10 @@ def main() -> int:
     parser.error(f"Input directory does not exist: {args.input}")
 
   extensions = {str(ext).lower() if str(ext).startswith(".") else f".{str(ext).lower()}" for ext in args.extensions}
-  pending_images = _collect_pending_images(args.input, extensions)
+  pending_images = _collect_pending_images(args.input, extensions, args.revalidate)
 
   if not pending_images:
-    print("No pending images: every image already has a corresponding .json label.")
+    print("No images found for labeling with the provided filters.")
     return 0
 
   root = tk.Tk()
