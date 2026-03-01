@@ -55,12 +55,14 @@ def _build_parser() -> argparse.ArgumentParser:
 def _flatten_zone_metrics(zone_metrics: ZoneBlurMetrics, prefix: str) -> typing.Dict[str, float]:
   out: typing.Dict[str, float] = {}
 
-  for group_name in ["zone", "reference", "compare"]:
+  for group_name in ["compare"]:
     group = getattr(zone_metrics, group_name)
     for field in dataclasses.fields(group):
-      value = float(getattr(group, field.name))
-      out[f"{prefix}.{group_name}.{field.name}"] = value
+      if field.name.endswith('_ratio'):
+        value = float(getattr(group, field.name))
+        out[f"{prefix}.{group_name}.{field.name}"] = value
 
+  """
   for extra_name in [
     "zone_area_ratio",
     "reference_area_ratio",
@@ -70,6 +72,8 @@ def _flatten_zone_metrics(zone_metrics: ZoneBlurMetrics, prefix: str) -> typing.
     "valid_reference",
   ]:
     out[f"{prefix}.{extra_name}"] = float(getattr(zone_metrics, extra_name))
+  """
+
   return out
 
 
@@ -134,6 +138,9 @@ def _load_labeled_samples(
         raise ValueError(f"image must contain exactly 1 face ({len(faces)} found): {image_path}")
 
       metrics = faces[0].compute_privacy_blur_metrics()
+      print(f">>>> {image_path}")
+      print("eyes_blur: " + str(metrics.eyes_blur))
+      print("face_blur: " + str(metrics.face_blur) + "\n")
       eyes_samples.append(LabeledSample(
         image_path=image_path,
         has_blur=eyes_blur,

@@ -34,9 +34,9 @@ class CompareMetrics:
 
 @dataclasses.dataclass(frozen=True)
 class ZoneBlurMetrics:
+  compare: CompareMetrics
   zone: RawBlurMetrics
   reference: RawBlurMetrics
-  compare: CompareMetrics
   zone_area_ratio: float
   reference_area_ratio: float
   zone_min_size_px: float
@@ -153,6 +153,11 @@ class FaceDetection:
     else:
       background_mask = (parts_union_mask == 0).astype(np.uint8)
 
+    print(f"eye_ellipse = {self.eye_ellipse}")
+    print(f"eye_mask.size = {np.count_nonzero(eye_mask)}")
+    print(f"mouth_mask.size = {np.count_nonzero(mouth_mask)}")
+    print(f"nose_mask.size = {np.count_nonzero(nose_mask)}")
+    print(f"background_mask.size = {np.count_nonzero(background_mask)}")
     outside_raw, outside_area_ratio, outside_min_side, outside_valid = self._compute_raw_masked_blur_metrics(
       image=crop,
       mask_u8=background_mask,
