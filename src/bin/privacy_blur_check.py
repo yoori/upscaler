@@ -129,20 +129,21 @@ def _load_labeled_samples(
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
     faces = searcher.get_faces(image_rgb, is_bgr=False)
-    if len(faces) != 1:
-      raise ValueError(f"image must contain exactly 1 face ({len(faces)} found): {image_path}")
+    if len(faces) > 0:
+      if len(faces) > 1:
+        raise ValueError(f"image must contain exactly 1 face ({len(faces)} found): {image_path}")
 
-    metrics = faces[0].compute_privacy_blur_metrics()
-    eyes_samples.append(LabeledSample(
-      image_path=image_path,
-      has_blur=eyes_blur,
-      metrics=_flatten_metrics(metrics, "eyes"),
-    ))
-    face_samples.append(LabeledSample(
-      image_path=image_path,
-      has_blur=face_blur,
-      metrics=_flatten_metrics(metrics, "face"),
-    ))
+      metrics = faces[0].compute_privacy_blur_metrics()
+      eyes_samples.append(LabeledSample(
+        image_path=image_path,
+        has_blur=eyes_blur,
+        metrics=_flatten_metrics(metrics, "eyes"),
+      ))
+      face_samples.append(LabeledSample(
+        image_path=image_path,
+        has_blur=face_blur,
+        metrics=_flatten_metrics(metrics, "face"),
+      ))
 
   return eyes_samples, face_samples
 
@@ -254,7 +255,7 @@ def _fit_thresholds(samples: typing.List[LabeledSample]) -> typing.List[typing.T
 
 
 def _print_results(zone_name: str, fitted: typing.List[typing.Tuple[str, ThresholdResult]]) -> None:
-  print(f"\\n=== {zone_name.upper()} ===")
+  print(f"\n=== {zone_name.upper()} ===")
   if not fitted:
     print("No valid metrics found")
     return
