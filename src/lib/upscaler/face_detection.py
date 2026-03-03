@@ -60,8 +60,6 @@ class FaceDetection:
   bbox_norm: typing.List[float]
   affine_matrix: typing.Optional[np.ndarray]
   crop: typing.Optional[np.ndarray] = None
-  landmarks_5: typing.Optional[np.ndarray] = None
-  landmarks_all: typing.Optional[np.ndarray] = None
   landmarks_all_face_crop: typing.Optional[typing.List[typing.List[float]]] = None
   eye_ellipse: typing.Optional[Ellipse] = None
   mouth_ellipse: typing.Optional[Ellipse] = None
@@ -75,11 +73,9 @@ class FaceDetection:
     bbox_norm: typing.Optional[typing.List[float]] = None,
     affine_matrix: typing.Optional[np.ndarray] = None,
     crop: typing.Optional[np.ndarray] = None,
-    landmarks_5: typing.Optional[np.ndarray] = None,
-    landmarks_all: typing.Optional[np.ndarray] = None,
-    landmarks_all_face_crop: typing.Optional[typing.List[typing.List[float]]] = None,
-    eye_ellipse: typing.Optional[Ellipse] = None,
-    mouth_ellipse: typing.Optional[Ellipse] = None,
+    landmarks_all_face_crop: typing.Optional[typing.List[typing.List[float]]],
+    eye_ellipse: typing.Optional[Ellipse],
+    mouth_ellipse: typing.Optional[Ellipse],
   ) -> None:
     resolved_bbox_norm = self._resolve_bbox_norm(
       bbox_norm=bbox_norm,
@@ -90,8 +86,6 @@ class FaceDetection:
     object.__setattr__(self, "bbox_norm", resolved_bbox_norm)
     object.__setattr__(self, "affine_matrix", affine_matrix)
     object.__setattr__(self, "crop", crop)
-    object.__setattr__(self, "landmarks_5", landmarks_5)
-    object.__setattr__(self, "landmarks_all", landmarks_all)
     object.__setattr__(self, "landmarks_all_face_crop", self._normalize_landmarks_face_crop(landmarks_all_face_crop))
     object.__setattr__(self, "eye_ellipse", self._normalize_ellipse(eye_ellipse))
     object.__setattr__(self, "mouth_ellipse", self._normalize_ellipse(mouth_ellipse))

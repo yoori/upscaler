@@ -12,7 +12,7 @@ import realesrgan
 import gfpgan
 import codeformer.basicsr.archs.codeformer_arch
 
-from .face_detection import Ellipse, FaceDetection, FacePrivacyBlurMetrics
+from .face_detection import FaceDetection, FacePrivacyBlurMetrics
 from .face_searcher import FaceSearcher
 
 
@@ -68,12 +68,7 @@ class UpscaleFaceInfo:
   bbox: typing.List[float]
   face_px: int
   algorithm: str
-  landmarks5: typing.Optional[typing.List[typing.List[float]]] = None
-  landmarks_all: typing.Optional[typing.List[typing.List[float]]] = None
-  landmarks_all_face_crop: typing.Optional[typing.List[typing.List[float]]] = None
-  eye_ellipse: typing.Optional[Ellipse] = None
-  eye_ellipse_face_crop: typing.Optional[Ellipse] = None
-  mouth_ellipse_face_crop: typing.Optional[Ellipse] = None
+  face_detection: FaceDetection
   steps: typing.List[UpscaleFaceInfoStep] = dataclasses.field(default_factory=list)
   privacy_blur_metrics: typing.Optional[FacePrivacyBlurMetrics] = None
 
@@ -120,43 +115,18 @@ class UpscaleFaceInfo:
 
     crop = image_bgr[y1:y2, x1:x2].copy()
 
-    if self.landmarks5:
-      for point in self.landmarks5:
-        if len(point) < 2:
-          continue
-        if not (0.0 <= float(point[0]) <= 1.0 and 0.0 <= float(point[1]) <= 1.0):
-          continue
-        px = int(round(point[0] * w - x1))
-        py = int(round(point[1] * h - y1))
+    landmarks_face_crop = self.face_detection.landmarks_all_face_crop
+    if landmarks_face_crop is not None:
+      points = np.asarray(landmarks_face_crop, dtype=np.float32).reshape(-1, 2)
+      if points.shape[0] >= 5:
+        points = points[:5]
+      for point in points:
+        px = int(round(float(point[0]) * crop.shape[1]))
+        py = int(round(float(point[1]) * crop.shape[0]))
         if 0 <= px < crop.shape[1] and 0 <= py < crop.shape[0]:
           cv2.circle(crop, (px, py), int(point_radius), point_color, -1)
 
     return crop
-
-  def get_eye_mask(self, *, width: int, height: int) -> np.ndarray:
-    """
-    Return a binary (0/255) mask for the eye ellipse in image coordinates.
-    Expects eye_ellipse params normalized to [0..1] relative to the image size.
-    """
-    if not self.eye_ellipse:
-      return np.zeros((0, 0), dtype=np.uint8)
-
-    if width <= 0 or height <= 0:
-      return np.zeros((0, 0), dtype=np.uint8)
-
-    cx = float(self.eye_ellipse.center[0]) * width
-    cy = float(self.eye_ellipse.center[1]) * height
-    ax = float(self.eye_ellipse.axes[0]) * width
-    ay = float(self.eye_ellipse.axes[1]) * height
-
-    if ax <= 0 or ay <= 0:
-      return np.zeros((0, 0), dtype=np.uint8)
-
-    mask = np.zeros((height, width), dtype=np.uint8)
-    center_px = (int(round(cx)), int(round(cy)))
-    axes_px = (max(1, int(round(ax))), max(1, int(round(ay))))
-    cv2.ellipse(mask, center_px, axes_px, float(self.eye_ellipse.angle), 0, 360, 255, -1)
-    return mask
 
   @staticmethod
   def _resolve_face_crop_shape(
@@ -171,59 +141,6 @@ class UpscaleFaceInfo:
     if face_crop_shape is not None:
       return int(face_crop_shape[0]), int(face_crop_shape[1])
     return 0, 0
-
-  def get_eye_mask_for_face_crop(
-    self,
-    face_crop_shape: typing.Tuple[int, int],
-  ) -> np.ndarray:
-    return self._as_face_detection().get_eye_mask(face_crop_shape)
-
-  @staticmethod
-  def _render_face_crop_ellipse_mask(
-    ellipse: typing.Optional[Ellipse],
-    *,
-    width: int,
-    height: int,
-  ) -> np.ndarray:
-    if ellipse is None:
-      return np.zeros((height, width), dtype=np.uint8)
-
-    cx = float(ellipse.center[0]) * width
-    cy = float(ellipse.center[1]) * height
-    ax = float(ellipse.axes[0]) * width
-    ay = float(ellipse.axes[1]) * height
-    if ax <= 0 or ay <= 0:
-      return np.zeros((height, width), dtype=np.uint8)
-
-    mask = np.zeros((height, width), dtype=np.uint8)
-    center_px = (int(round(cx)), int(round(cy)))
-    axes_px = (max(1, int(round(ax))), max(1, int(round(ay))))
-    cv2.ellipse(mask, center_px, axes_px, float(ellipse.angle), 0, 360, 255, -1)
-    return mask
-
-  def get_mouth_mask_for_face_crop(
-    self,
-    face_crop_shape: typing.Tuple[int, int],
-  ) -> np.ndarray:
-    return self._as_face_detection().get_mouth_mask(face_crop_shape)
-
-  def get_nose_zone_mask_for_face_crop(
-    self,
-    face_crop_shape: typing.Tuple[int, int],
-  ) -> np.ndarray:
-    return self._as_face_detection().get_nose_zone_mask(face_crop_shape)
-
-  def _as_face_detection(self) -> FaceDetection:
-    eye_ellipse = (
-      self.eye_ellipse_face_crop if self.eye_ellipse_face_crop is not None
-      else self.eye_ellipse
-    )
-    return FaceDetection(
-      bbox_norm=[0.0, 0.0, 1.0, 1.0],
-      landmarks_all_face_crop=self.landmarks_all_face_crop,
-      eye_ellipse=eye_ellipse,
-      mouth_ellipse=self.mouth_ellipse_face_crop,
-    )
 
   def get_full_face_mask(
     self,
@@ -246,9 +163,9 @@ class UpscaleFaceInfo:
 
     full_face_mask = np.zeros((height, width), dtype=np.uint8)
     for mask in (
-      self.get_eye_mask_for_face_crop(face_crop_shape),
-      self.get_mouth_mask_for_face_crop(face_crop_shape),
-      self.get_nose_zone_mask_for_face_crop(face_crop_shape),
+      self.face_detection.get_eye_mask(face_crop_shape),
+      self.face_detection.get_mouth_mask(face_crop_shape),
+      self.face_detection.get_nose_zone_mask(face_crop_shape),
     ):
       if mask is None or mask.size == 0:
         continue
@@ -724,100 +641,6 @@ class Upscaler(object):
 
     return mask
 
-  def _create_eye_ellipse(
-    self,
-    *,
-    landmarks5: typing.List[typing.List[float]],
-    image_shape: typing.Tuple[int, int],
-  ) -> typing.Optional[Ellipse]:
-    """
-    Build a directed oval mask for the eye region.
-    The major axis is aligned with the eye line and centered on the eye midpoint.
-    It should fully cover both eyes (not just the triangle between eyes and nose).
-    Returns normalized ellipse params for use on any image of the same aspect.
-    """
-    if not landmarks5 or len(landmarks5) < 3:
-      return None
-
-    h, w = image_shape
-    if h <= 0 or w <= 0:
-      return None
-
-    points = np.asarray(landmarks5, dtype=np.float32).reshape(-1, 2)
-    if points.shape[0] < 3:
-      return None
-
-    left_eye, right_eye, nose = points[:3]
-
-    lx, ly = float(left_eye[0]) * w, float(left_eye[1]) * h
-    rx, ry = float(right_eye[0]) * w, float(right_eye[1]) * h
-    nx, ny = float(nose[0]) * w, float(nose[1]) * h
-
-    eye_dx = rx - lx
-    eye_dy = ry - ly
-    eye_dist = float(np.hypot(eye_dx, eye_dy))
-    if eye_dist <= 1e-6:
-      return None
-
-    eye_center_x = (lx + rx) * 0.5
-    eye_center_y = (ly + ry) * 0.5
-    nose_vec_x = nx - eye_center_x
-    nose_vec_y = ny - eye_center_y
-    nose_dist = float(np.hypot(nose_vec_x, nose_vec_y))
-
-    center_x = eye_center_x
-    center_y = eye_center_y
-
-    angle_deg = float(np.degrees(np.arctan2(eye_dy, eye_dx)))
-    axis_x = max(1.0, eye_dist * 0.90)
-    axis_y = max(1.0, max(eye_dist * 0.38, nose_dist * 0.30))
-
-    return Ellipse(
-      center=(center_x / w, center_y / h),
-      axes=(axis_x / w, axis_y / h),
-      angle=angle_deg,
-    )
-
-  def _create_mouth_ellipse(
-    self,
-    *,
-    landmarks5: typing.List[typing.List[float]],
-    image_shape: typing.Tuple[int, int],
-  ) -> typing.Optional[Ellipse]:
-    if not landmarks5 or len(landmarks5) < 5:
-      return None
-
-    h, w = image_shape
-    if h <= 0 or w <= 0:
-      return None
-
-    points = np.asarray(landmarks5, dtype=np.float32).reshape(-1, 2)
-    if points.shape[0] < 5:
-      return None
-
-    left_eye, right_eye, _, mouth_left, mouth_right = points[:5]
-    lx, ly = float(left_eye[0]) * w, float(left_eye[1]) * h
-    rx, ry = float(right_eye[0]) * w, float(right_eye[1]) * h
-    mlx, mly = float(mouth_left[0]) * w, float(mouth_left[1]) * h
-    mrx, mry = float(mouth_right[0]) * w, float(mouth_right[1]) * h
-
-    mouth_center_x = (mlx + mrx) * 0.5
-    mouth_center_y = (mly + mry) * 0.5
-    mouth_dist = float(np.hypot(mrx - mlx, mry - mly))
-    eye_dist = float(np.hypot(rx - lx, ry - ly))
-    if mouth_dist <= 1e-6 and eye_dist <= 1e-6:
-      return None
-
-    angle_deg = float(np.degrees(np.arctan2(ry - ly, rx - lx)))
-    axis_x = max(1.0, max(mouth_dist * 0.80, eye_dist * 0.26))
-    axis_y = max(1.0, max(mouth_dist * 0.42, eye_dist * 0.18))
-
-    return Ellipse(
-      center=(mouth_center_x / w, mouth_center_y / h),
-      axes=(axis_x / w, axis_y / h),
-      angle=angle_deg,
-    )
-
   def _apply_faces_routed(
     self,
     *,
@@ -852,119 +675,21 @@ class Upscaler(object):
     face_infos: typing.List[UpscaleFaceInfo] = []
 
     up_h, up_w = upscaled_bgr.shape[:2]
-    orig_h, orig_w = original_bgr.shape[:2]
 
     for i, face_detection in enumerate(faces):
       face_crop = face_detection.crop
       if face_crop is None or not face_crop.size:
         continue
       face_px = face_detection.size_px
-      landmarks5 = None
-      landmarks_all = None
-      eye_ellipse = None
-      if face_detection.landmarks_all is not None:
-        landmarks = np.asarray(face_detection.landmarks_all, dtype=float)
-      elif face_detection.landmarks_5 is not None:
-        landmarks = np.asarray(face_detection.landmarks_5, dtype=float)
-      else:
-        landmarks = None
-
-      if landmarks is not None:
-        landmarks[:, 0] /= float(up_w) if up_w else 1.0
-        landmarks[:, 1] /= float(up_h) if up_h else 1.0
-        landmarks_all = landmarks.tolist()
-        if landmarks.shape[0] >= 5:
-          landmarks5 = landmarks[:5].tolist()
-        else:
-          landmarks5 = landmarks.tolist()
-
-      if landmarks5 is not None:
-        eye_ellipse = self._create_eye_ellipse(
-          landmarks5=landmarks5,
-          image_shape=(orig_h, orig_w),
-        )
       bbox_norm = face_detection.bbox_norm
-      eye_ellipse_face_crop = None
-      mouth_ellipse_face_crop = None
-      transformed_landmarks = None
-      if landmarks_all is not None:
-        points = np.asarray(landmarks_all, dtype=np.float32).reshape(-1, 2)
-        if points.shape[0] >= 3:
-          transformed_landmarks = points.copy()
-
-      ox1, oy1, ox2, oy2 = _bbox_norm_to_pixels(
-        bbox_norm,
-        width=orig_w,
-        height=orig_h,
+      original_face_detection = self._face_searcher.create_original_face_detection(
+        face_detection=face_detection,
+        original_bgr=original_bgr,
+        upscaled_shape=(up_h, up_w),
       )
-      original_crop = None
-      if face_detection.affine_matrix is not None and face_crop.size:
-        matrix_for_original = np.asarray(face_detection.affine_matrix, dtype=np.float32).copy()
-        sx = float(up_w) / float(orig_w) if orig_w else 1.0
-        sy = float(up_h) / float(orig_h) if orig_h else 1.0
-        matrix_for_original[0, 0] *= sx
-        matrix_for_original[0, 1] *= sy
-        matrix_for_original[1, 0] *= sx
-        matrix_for_original[1, 1] *= sy
-        original_crop = cv2.warpAffine(
-          original_bgr,
-          matrix_for_original,
-          (face_crop.shape[1], face_crop.shape[0]),
-          flags=cv2.INTER_LINEAR,
-          borderMode=cv2.BORDER_REFLECT_101,
-        )
-        if transformed_landmarks is not None:
-          transformed_landmarks[:, 0] *= float(up_w) if up_w else 1.0
-          transformed_landmarks[:, 1] *= float(up_h) if up_h else 1.0
-          transformed_landmarks = cv2.transform(
-            transformed_landmarks[None, :, :],
-            np.asarray(face_detection.affine_matrix, dtype=np.float32),
-          )[0]
-          transformed_landmarks[:, 0] /= float(face_crop.shape[1]) if face_crop.shape[1] else 1.0
-          transformed_landmarks[:, 1] /= float(face_crop.shape[0]) if face_crop.shape[0] else 1.0
-      elif ox2 > ox1 and oy2 > oy1:
-        original_crop = original_bgr[oy1:oy2, ox1:ox2].copy()
-        if transformed_landmarks is not None:
-          ux1 = float(bbox_norm[0]) * float(up_w)
-          uy1 = float(bbox_norm[1]) * float(up_h)
-          ux2 = float(bbox_norm[2]) * float(up_w)
-          uy2 = float(bbox_norm[3]) * float(up_h)
-          box_w = max(1e-8, ux2 - ux1)
-          box_h = max(1e-8, uy2 - uy1)
-          transformed_landmarks[:, 0] = (transformed_landmarks[:, 0] * float(up_w) - ux1) / box_w
-          transformed_landmarks[:, 1] = (transformed_landmarks[:, 1] * float(up_h) - uy1) / box_h
-        if original_crop.size and original_crop.shape[:2] != face_crop.shape[:2]:
-          original_crop = cv2.resize(
-            original_crop,
-            (face_crop.shape[1], face_crop.shape[0]),
-            interpolation=cv2.INTER_LINEAR,
-          )
-      if transformed_landmarks is not None:
-        eye_ellipse_face_crop = self._create_eye_ellipse(
-          landmarks5=transformed_landmarks[:5].tolist(),
-          image_shape=(
-            int(face_crop.shape[0]) if face_crop is not None and face_crop.size else 0,
-            int(face_crop.shape[1]) if face_crop is not None and face_crop.size else 0,
-          ),
-        )
-        mouth_ellipse_face_crop = self._create_mouth_ellipse(
-          landmarks5=transformed_landmarks[:5].tolist(),
-          image_shape=(
-            int(face_crop.shape[0]) if face_crop is not None and face_crop.size else 0,
-            int(face_crop.shape[1]) if face_crop is not None and face_crop.size else 0,
-          ),
-        )
+      original_crop = original_face_detection.crop if original_face_detection is not None else None
       privacy_blur_metrics = None
-      if original_crop is not None and original_crop.size:
-        original_face_detection = FaceDetection(
-          bbox_norm=bbox_norm,
-          crop=original_crop,
-          landmarks_all_face_crop=(
-            transformed_landmarks.tolist() if transformed_landmarks is not None else None
-          ),
-          eye_ellipse=eye_ellipse_face_crop,
-          mouth_ellipse=mouth_ellipse_face_crop,
-        )
+      if original_face_detection is not None:
         privacy_blur_metrics = original_face_detection.compute_privacy_blur_metrics(
           face_crop=original_crop,
           rgb_input=False,
@@ -974,14 +699,11 @@ class Upscaler(object):
         bbox=bbox_norm,
         face_px=face_px,
         algorithm="",
-        landmarks5=landmarks5,
-        landmarks_all=landmarks_all,
-        landmarks_all_face_crop=(
-          transformed_landmarks.tolist() if transformed_landmarks is not None else None
+        face_detection=(
+          original_face_detection
+          if original_face_detection is not None
+          else face_detection.change_crop(face_crop)
         ),
-        eye_ellipse=eye_ellipse,
-        eye_ellipse_face_crop=eye_ellipse_face_crop,
-        mouth_ellipse_face_crop=mouth_ellipse_face_crop,
         privacy_blur_metrics=privacy_blur_metrics,
       )
 
@@ -1070,9 +792,9 @@ class Upscaler(object):
             )
 
           if fill_debug_images:
-            eye_mask = face_info.get_eye_mask_for_face_crop(face_crop_shape)
-            mouth_mask = face_info.get_mouth_mask_for_face_crop(face_crop_shape)
-            nose_zone_mask = face_info.get_nose_zone_mask_for_face_crop(face_crop_shape)
+            eye_mask = face_info.face_detection.get_eye_mask(face_crop_shape)
+            mouth_mask = face_info.face_detection.get_mouth_mask(face_crop_shape)
+            nose_zone_mask = face_info.face_detection.get_nose_zone_mask(face_crop_shape)
             face_masks_overlay = self._build_face_masks_overlay(
               base_image=current_face,
               eye_mask=eye_mask,

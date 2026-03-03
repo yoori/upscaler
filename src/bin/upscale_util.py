@@ -285,7 +285,7 @@ async def main(
           if step.name == "face masks":
             step_image = _draw_landmark_crosses(
               step_image,
-              face_info.landmarks_all_face_crop or face_info.landmarks5,
+              face_info.face_detection.landmarks_all_face_crop,
             )
           collage_parts.append((step_image, step.name))
 
