@@ -139,9 +139,9 @@ def _load_labeled_samples(
         raise ValueError(f"image must contain exactly 1 face ({len(faces)} found): {image_path}")
 
       metrics = faces[0].compute_privacy_blur_metrics()
-      print(f">>>> {image_path}")
-      print("eyes_blur: " + str(metrics.eyes_blur))
-      print("face_blur: " + str(metrics.face_blur) + "\n")
+      #print(f">>>> {image_path}")
+      #print("eyes_blur: " + str(metrics.eyes_blur))
+      #print("face_blur: " + str(metrics.face_blur) + "\n")
       eyes_samples.append(LabeledSample(
         image_path=image_path,
         has_blur=eyes_blur,
@@ -315,6 +315,8 @@ def main() -> int:
   eyes_samples, face_samples = _load_labeled_samples(image_paths=image_paths, searcher=searcher)
 
   print(f"Processed {len(image_paths)} images")
+  print(f"Use {len(eyes_samples)} eyes samples")
+  print(f"Use {len(face_samples)} face samples")
 
   eyes_fitted = _fit_thresholds(eyes_samples, false_negative_weight=args.false_negative_weight)
   face_fitted = _fit_thresholds(face_samples, false_negative_weight=args.false_negative_weight)

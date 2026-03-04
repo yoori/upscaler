@@ -154,11 +154,6 @@ class FaceDetection:
     else:
       background_mask = (parts_union_mask == 0).astype(np.uint8)
 
-    print(f"eye_ellipse = {self.eye_ellipse}")
-    print(f"eye_mask.size = {np.count_nonzero(eye_mask)}")
-    print(f"mouth_mask.size = {np.count_nonzero(mouth_mask)}")
-    print(f"nose_mask.size = {np.count_nonzero(nose_mask)}")
-    print(f"background_mask.size = {np.count_nonzero(background_mask)}")
     outside_raw, outside_area_ratio, outside_min_side, outside_valid = self._compute_raw_masked_blur_metrics(
       image=crop,
       mask_u8=background_mask,
@@ -193,10 +188,24 @@ class FaceDetection:
       valid_reference=outside_valid,
     )
 
-    full_face_mask = np.ones((h, w), dtype=np.uint8)
+    face_mask = (self.get_face_mask((h, w)) > 0).astype(np.uint8)
+    if np.count_nonzero(face_mask) <= 0:
+      outside_face_mask = np.ones((h, w), dtype=np.uint8)
+    else:
+      outside_face_mask = (face_mask == 0).astype(np.uint8)
+
+    outside_face_raw, outside_face_area_ratio, outside_face_min_side, outside_face_valid = self._compute_raw_masked_blur_metrics(
+      image=crop,
+      mask_u8=outside_face_mask,
+      normalize_size=normalize_size,
+      min_mask_area_px=min_mask_area_px,
+      min_roi_side_px=min_roi_side_px,
+      rgb_input=rgb_input,
+    )
+
     face_zone_raw, face_area_ratio, face_min_side, face_valid = self._compute_raw_masked_blur_metrics(
       image=crop,
-      mask_u8=full_face_mask,
+      mask_u8=parts_union_mask,
       normalize_size=normalize_size,
       min_mask_area_px=min_mask_area_px,
       min_roi_side_px=min_roi_side_px,
@@ -204,19 +213,19 @@ class FaceDetection:
     )
     face_metrics = ZoneBlurMetrics(
       zone=face_zone_raw,
-      reference=outside_raw,
+      reference=outside_face_raw,
       compare=self._compare_metrics(
         zone=face_zone_raw,
-        reference=outside_raw,
+        reference=outside_face_raw,
         eps=float(eps),
-        valid_reference=outside_valid,
+        valid_reference=outside_face_valid,
       ),
       zone_area_ratio=face_area_ratio,
-      reference_area_ratio=outside_area_ratio,
+      reference_area_ratio=outside_face_area_ratio,
       zone_min_size_px=face_min_side,
-      reference_min_size_px=outside_min_side,
+      reference_min_size_px=outside_face_min_side,
       valid_zone=face_valid,
-      valid_reference=outside_valid,
+      valid_reference=outside_face_valid,
     )
 
     return FacePrivacyBlurMetrics(
