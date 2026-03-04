@@ -29,7 +29,7 @@ class ThresholdResult:
   less_or_equal_is_blur: bool
   weighted_error: float
   false_positive: int
-  false_negative: int
+  false_negative: int  # Number of cases when blur is present, but we didn't predict it.
   count_of_blurred: int
   count_of_non_blurred: int
   count_of_blur_predicted: int
@@ -43,6 +43,7 @@ def _build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--input-dir", type=pathlib.Path, required=True, help="Directory with images and sidecar JSON labels")
   parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
   parser.add_argument("--face-size", type=int, default=512)
+  parser.add_argument("--false-negative-weight", type=float, default=2)
   parser.add_argument(
     "--extensions",
     nargs="*",
@@ -173,6 +174,7 @@ def _evaluate_threshold(
   metric_name: str,
   threshold: float,
   less_or_equal_is_blur: bool,
+  false_negative_weight: float = 2,
 ) -> ThresholdResult:
   false_positive = 0
   false_negative = 0
@@ -200,7 +202,7 @@ def _evaluate_threshold(
         false_positive += 1
 
   count_of_non_blur_predicted = len(samples) - count_of_blur_predicted
-  weighted_error = float((2 * false_negative) + false_positive)
+  weighted_error = float((false_negative_weight * false_negative) + false_positive)
 
   return ThresholdResult(
     threshold=threshold,
@@ -215,7 +217,11 @@ def _evaluate_threshold(
   )
 
 
-def _find_best_threshold_for_metric(samples: typing.List[LabeledSample], metric_name: str) -> typing.Optional[ThresholdResult]:
+def _find_best_threshold_for_metric(
+  samples: typing.List[LabeledSample],
+  metric_name: str,
+  false_negative_weight: float = 2,
+) -> typing.Optional[ThresholdResult]:
   values = [sample.metrics[metric_name] for sample in samples if math.isfinite(sample.metrics[metric_name])]
   if len(values) != len(samples):
     return None
@@ -232,6 +238,7 @@ def _find_best_threshold_for_metric(samples: typing.List[LabeledSample], metric_
         metric_name=metric_name,
         threshold=threshold,
         less_or_equal_is_blur=less_or_equal_is_blur,
+        false_negative_weight=false_negative_weight,
       )
       if best is None:
         best = result
@@ -245,14 +252,21 @@ def _find_best_threshold_for_metric(samples: typing.List[LabeledSample], metric_
   return best
 
 
-def _fit_thresholds(samples: typing.List[LabeledSample]) -> typing.List[typing.Tuple[str, ThresholdResult]]:
+def _fit_thresholds(
+  samples: typing.List[LabeledSample],
+  false_negative_weight: float = 2,
+) -> typing.List[typing.Tuple[str, ThresholdResult]]:
   if not samples:
     return []
 
   metric_names = sorted(samples[0].metrics.keys())
   fitted: typing.List[typing.Tuple[str, ThresholdResult]] = []
   for metric_name in metric_names:
-    best = _find_best_threshold_for_metric(samples, metric_name)
+    best = _find_best_threshold_for_metric(
+      samples,
+      metric_name,
+      false_negative_weight=false_negative_weight
+    )
     if best is None:
       continue
     fitted.append((metric_name, best))
@@ -267,7 +281,7 @@ def _print_results(zone_name: str, fitted: typing.List[typing.Tuple[str, Thresho
     print("No valid metrics found")
     return
 
-  for metric_name, result in fitted:
+  for metric_name, result in sorted(fitted, key=lambda item: item[0]):
     direction = "<= threshold => blur" if result.less_or_equal_is_blur else ">= threshold => blur"
     print(
       " | ".join([
@@ -302,8 +316,8 @@ def main() -> int:
 
   print(f"Processed {len(image_paths)} images")
 
-  eyes_fitted = _fit_thresholds(eyes_samples)
-  face_fitted = _fit_thresholds(face_samples)
+  eyes_fitted = _fit_thresholds(eyes_samples, false_negative_weight=args.false_negative_weight)
+  face_fitted = _fit_thresholds(face_samples, false_negative_weight=args.false_negative_weight)
 
   _print_results("eyes", eyes_fitted)
   _print_results("face", face_fitted)
