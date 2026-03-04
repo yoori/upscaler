@@ -156,7 +156,13 @@ class FacePartStateModelTrainer:
       loss_sum += loss.item() * batch_size
       total += batch_size
       probs = torch.sigmoid(logits)
-      preds = (probs >= 0.5).to(dtype=targets.dtype)
-      correct += (preds == targets).all(dim=1).sum().item()
+      preds = probs >= 0.5
+      # Targets contain soft visibility values for the blurred class
+      # (e.g. [0.37, 1.0]). Comparing float labels with exact equality
+      # makes such samples always count as wrong and caps the score around
+      # the share of hard-labeled samples. Convert targets to hard labels
+      # before score calculation so the metric reflects real model quality.
+      target_labels = targets >= 0.5
+      correct += (preds == target_labels).all(dim=1).sum().item()
 
     return loss_sum / max(1, total), correct / max(1, total)
