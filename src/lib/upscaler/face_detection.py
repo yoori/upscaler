@@ -339,43 +339,51 @@ class FaceDetection:
 
   @staticmethod
   def _create_face_ellipse(*, landmarks: typing.List[typing.List[float]]) -> typing.Optional[Ellipse]:
-    if not landmarks or len(landmarks) < 5:
+    if not landmarks:
       return None
 
     points = np.asarray(landmarks, dtype=np.float32).reshape(-1, 2)
-    if points.shape[0] < 5:
+    if points.shape[0] < 3:
       return None
 
     points[:, 0] = np.clip(points[:, 0], 0.0, 1.0)
     points[:, 1] = np.clip(points[:, 1], 0.0, 1.0)
 
-    left_eye, right_eye = points[0], points[1]
-    mouth_left, mouth_right = points[3], points[4]
-    eye_center = (left_eye + right_eye) * 0.5
-    mouth_center = (mouth_left + mouth_right) * 0.5
+    if points.shape[0] >= 5:
+      left_eye, right_eye = points[0], points[1]
+      mouth_left, mouth_right = points[3], points[4]
+      eye_center = (left_eye + right_eye) * 0.5
+      mouth_center = (mouth_left + mouth_right) * 0.5
 
-    eye_vec = right_eye - left_eye
-    eye_dist = float(np.hypot(float(eye_vec[0]), float(eye_vec[1])))
-    eye_to_mouth = mouth_center - eye_center
-    eye_mouth_dist = float(np.hypot(float(eye_to_mouth[0]), float(eye_to_mouth[1])))
+      eye_vec = right_eye - left_eye
+      eye_dist = float(np.hypot(float(eye_vec[0]), float(eye_vec[1])))
+      eye_to_mouth = mouth_center - eye_center
+      eye_mouth_dist = float(np.hypot(float(eye_to_mouth[0]), float(eye_to_mouth[1])))
 
-    if eye_dist > 1e-6 and eye_mouth_dist > 1e-6:
-      # Shift center toward forehead: 0.74 of the distance from mouth to eyes.
-      center = mouth_center + 0.74 * (eye_center - mouth_center)
-      angle = float(np.degrees(np.arctan2(float(eye_vec[1]), float(eye_vec[0]))))
+      if eye_dist > 1e-6 and eye_mouth_dist > 1e-6:
+        # Shift center toward forehead: 0.74 of the distance from mouth to eyes.
+        center = mouth_center + 0.74 * (eye_center - mouth_center)
+        angle = float(np.degrees(np.arctan2(float(eye_vec[1]), float(eye_vec[0]))))
 
-      # Width requirement: full ellipse width should be 2 * inter-eye distance.
-      axis_x = eye_dist
+        # Width requirement: full ellipse width should be 2 * inter-eye distance.
+        axis_x = eye_dist
 
-      # Height requirement: full ellipse height should be 3 * eye-to-mouth distance.
-      axis_y = eye_mouth_dist * 1.50
-      return Ellipse(
-        center=(float(center[0]), float(center[1])),
-        axes=(max(1e-6, axis_x), max(1e-6, axis_y)),
-        angle=angle,
-      )
+        # Height requirement: full ellipse height should be 3 * eye-to-mouth distance.
+        axis_y = eye_mouth_dist * 1.50
+        return Ellipse(
+          center=(float(center[0]), float(center[1])),
+          axes=(max(1e-6, axis_x), max(1e-6, axis_y)),
+          angle=angle,
+        )
 
-    hull = cv2.convexHull(points.astype(np.float32).reshape(-1, 1, 2))
+    hull_points = points
+    has_eye_points = points.shape[0] > 1
+    has_mouth_points = points.shape[0] > 4
+
+    if points.shape[0] > 2 and has_eye_points and has_mouth_points:
+      hull_points = np.delete(points, 2, axis=0)
+
+    hull = cv2.convexHull(hull_points.astype(np.float32).reshape(-1, 1, 2))
     if hull is None or hull.shape[0] < 3:
       return None
 
