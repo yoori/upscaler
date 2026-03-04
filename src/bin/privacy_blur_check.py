@@ -58,7 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
   parser.add_argument(
     "--eyes-only-check",
     action="store_true",
-    help="Use only eyes metrics and skip faces detected as face-blurred by FaceDetection.is_face_blurred",
+    help="Use only eyes metrics and skip faces detected as face-blurred by FaceDetection.is_blurred",
   )
   parser.add_argument(
     "--extensions",
@@ -156,7 +156,7 @@ def _load_labeled_samples(
         raise ValueError(f"image must contain exactly 1 face ({len(faces)} found): {image_path}")
 
       metrics = faces[0].compute_privacy_blur_metrics()
-      if eyes_only_check and faces[0].is_face_blurred(privacy_blur_metrics=metrics):
+      if eyes_only_check and faces[0].is_blurred(privacy_blur_metrics=metrics).face_blurred:
         continue
       #print(f">>>> {image_path}")
       #print("eyes_blur: " + str(metrics.eyes_blur))

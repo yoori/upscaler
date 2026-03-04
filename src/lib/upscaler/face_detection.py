@@ -53,6 +53,12 @@ class FacePrivacyBlurMetrics:
 
 
 @dataclasses.dataclass(frozen=True)
+class Blurred:
+  face_blurred: bool
+  eyes_blurred: bool
+
+
+@dataclasses.dataclass(frozen=True)
 class FaceDetection:
   """Face metadata in normalized coordinates relative to source image/crop."""
   # Required for mapping detections back to source image coordinates (paste-back/debug).
@@ -234,36 +240,64 @@ class FaceDetection:
       outside_parts=outside_raw,
     )
 
-  def is_face_blurred(
+  def is_blurred(
     self,
     *,
-    edge_density_ratio_threshold: float = 0.0421462,
-    lap_var_ratio_threshold: float = 0.0092719,
-    pixel_var_ratio_threshold: float = 0.0667524,
-    tenengrad_ratio_threshold: float = 0.0562823,
+    face_edge_density_ratio_threshold: float = 0.0421462,
+    face_lap_var_ratio_threshold: float = 0.0092719,
+    face_pixel_var_ratio_threshold: float = 0.0667524,
+    face_tenengrad_ratio_threshold: float = 0.0562823,
+    eyes_edge_density_ratio_threshold: float = 0.0542813,
+    eyes_lap_var_ratio_threshold: float = 0.0158647,
+    eyes_pixel_var_ratio_threshold: float = 0.285752,
+    eyes_tenengrad_ratio_threshold: float = 0.082788,
     privacy_blur_metrics: typing.Optional[FacePrivacyBlurMetrics] = None,
-  ) -> bool:
+  ) -> Blurred:
     metrics = self.compute_privacy_blur_metrics() if privacy_blur_metrics is None else privacy_blur_metrics
     face_blur = metrics.face_blur
     if face_blur.valid_zone < 0.5 or face_blur.valid_reference < 0.5:
-      return False
+      return Blurred(face_blurred=False, eyes_blurred=False)
 
-    ratios = face_blur.compare
-    ratio_values = [
-      float(ratios.edge_density_ratio),
-      float(ratios.lap_var_ratio),
-      float(ratios.pixel_var_ratio),
-      float(ratios.tenengrad_ratio),
+    face_ratios = face_blur.compare
+    face_ratio_values = [
+      float(face_ratios.edge_density_ratio),
+      float(face_ratios.lap_var_ratio),
+      float(face_ratios.pixel_var_ratio),
+      float(face_ratios.tenengrad_ratio),
     ]
-    if not all(np.isfinite(value) for value in ratio_values):
-      return False
+    if not all(np.isfinite(value) for value in face_ratio_values):
+      return Blurred(face_blurred=False, eyes_blurred=False)
 
-    return (
-      float(ratios.edge_density_ratio) <= float(edge_density_ratio_threshold)
-      and float(ratios.lap_var_ratio) <= float(lap_var_ratio_threshold)
-      and float(ratios.pixel_var_ratio) <= float(pixel_var_ratio_threshold)
-      and float(ratios.tenengrad_ratio) <= float(tenengrad_ratio_threshold)
+    face_blurred = (
+      float(face_ratios.edge_density_ratio) <= float(face_edge_density_ratio_threshold)
+      and float(face_ratios.lap_var_ratio) <= float(face_lap_var_ratio_threshold)
+      and float(face_ratios.pixel_var_ratio) <= float(face_pixel_var_ratio_threshold)
+      and float(face_ratios.tenengrad_ratio) <= float(face_tenengrad_ratio_threshold)
     )
+    if face_blurred:
+      return Blurred(face_blurred=True, eyes_blurred=True)
+
+    eyes_blur = metrics.eyes_blur
+    if eyes_blur.valid_zone < 0.5 or eyes_blur.valid_reference < 0.5:
+      return Blurred(face_blurred=False, eyes_blurred=False)
+
+    eyes_ratios = eyes_blur.compare
+    eyes_ratio_values = [
+      float(eyes_ratios.edge_density_ratio),
+      float(eyes_ratios.lap_var_ratio),
+      float(eyes_ratios.pixel_var_ratio),
+      float(eyes_ratios.tenengrad_ratio),
+    ]
+    if not all(np.isfinite(value) for value in eyes_ratio_values):
+      return Blurred(face_blurred=False, eyes_blurred=False)
+
+    eyes_blurred = (
+      float(eyes_ratios.edge_density_ratio) <= float(eyes_edge_density_ratio_threshold)
+      and float(eyes_ratios.lap_var_ratio) <= float(eyes_lap_var_ratio_threshold)
+      and float(eyes_ratios.pixel_var_ratio) <= float(eyes_pixel_var_ratio_threshold)
+      and float(eyes_ratios.tenengrad_ratio) <= float(eyes_tenengrad_ratio_threshold)
+    )
+    return Blurred(face_blurred=False, eyes_blurred=eyes_blurred)
 
   def get_eye_mask(self, face_crop_shape: typing.Tuple[int, int]) -> np.ndarray:
     height, width = face_crop_shape
