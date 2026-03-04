@@ -28,8 +28,19 @@ class ThresholdResult:
   threshold: float
   less_or_equal_is_blur: bool
   weighted_error: float
-  false_positive: int
+  false_positive: int  # Number of cases when blur isn't present, but we predict it.
   false_negative: int  # Number of cases when blur is present, but we didn't predict it.
+  count_of_blurred: int
+  count_of_non_blurred: int
+  count_of_blur_predicted: int
+  count_of_non_blur_predicted: int
+
+
+@dataclasses.dataclass(frozen=True)
+class AggregatedThresholdResult:
+  weighted_error: float
+  false_positive: int
+  false_negative: int
   count_of_blurred: int
   count_of_non_blurred: int
   count_of_blur_predicted: int
@@ -299,6 +310,87 @@ def _print_results(zone_name: str, fitted: typing.List[typing.Tuple[str, Thresho
     )
 
 
+def _evaluate_aggregated_thresholds(
+  *,
+  samples: typing.List[LabeledSample],
+  fitted: typing.List[typing.Tuple[str, ThresholdResult]],
+  false_negative_weight: float = 2,
+) -> AggregatedThresholdResult:
+  false_positive = 0
+  false_negative = 0
+  count_of_blurred = 0
+  count_of_non_blurred = 0
+  count_of_blur_predicted = 0
+
+  for sample in samples:
+    predicted_blur = False
+    for metric_name, metric_threshold in fitted:
+      value = sample.metrics[metric_name]
+      if metric_threshold.less_or_equal_is_blur:
+        predicted_blur = predicted_blur or value <= metric_threshold.threshold
+      else:
+        predicted_blur = predicted_blur or value >= metric_threshold.threshold
+
+    if predicted_blur:
+      count_of_blur_predicted += 1
+
+    if sample.has_blur:
+      count_of_blurred += 1
+      if not predicted_blur:
+        false_negative += 1
+    else:
+      count_of_non_blurred += 1
+      if predicted_blur:
+        false_positive += 1
+
+  count_of_non_blur_predicted = len(samples) - count_of_blur_predicted
+  weighted_error = float((false_negative_weight * false_negative) + false_positive)
+
+  return AggregatedThresholdResult(
+    weighted_error=weighted_error,
+    false_positive=false_positive,
+    false_negative=false_negative,
+    count_of_blurred=count_of_blurred,
+    count_of_non_blurred=count_of_non_blurred,
+    count_of_blur_predicted=count_of_blur_predicted,
+    count_of_non_blur_predicted=count_of_non_blur_predicted,
+  )
+
+
+def _print_aggregated_results(
+  zone_name: str,
+  samples: typing.List[LabeledSample],
+  fitted: typing.List[typing.Tuple[str, ThresholdResult]],
+  false_negative_weight: float = 2,
+) -> None:
+  print(f"\n=== {zone_name.upper()} AGGREGATED (ANY THRESHOLD MATCH) ===")
+  if not samples:
+    print("No samples found")
+    return
+  if not fitted:
+    print("No thresholds selected")
+    return
+
+  result = _evaluate_aggregated_thresholds(
+    samples=samples,
+    fitted=fitted,
+    false_negative_weight=false_negative_weight,
+  )
+  print(
+    " | ".join([
+      f"metrics_count={len(fitted)}",
+      "rule=blur_if_any_metric_matches_threshold",
+      f"weighted_error={result.weighted_error:.0f}",
+      f"false_negative={result.false_negative}",
+      f"false_positive={result.false_positive}",
+      f"count_of_blurred={result.count_of_blurred}",
+      f"count_of_non_blurred={result.count_of_non_blurred}",
+      f"count_of_blur_predicted={result.count_of_blur_predicted}",
+      f"count_of_non_blur_predicted={result.count_of_non_blur_predicted}",
+    ])
+  )
+
+
 def main() -> int:
   parser = _build_parser()
   args = parser.parse_args()
@@ -323,6 +415,18 @@ def main() -> int:
 
   _print_results("eyes", eyes_fitted)
   _print_results("face", face_fitted)
+  _print_aggregated_results(
+    "eyes",
+    eyes_samples,
+    eyes_fitted,
+    false_negative_weight=args.false_negative_weight,
+  )
+  _print_aggregated_results(
+    "face",
+    face_samples,
+    face_fitted,
+    false_negative_weight=args.false_negative_weight,
+  )
 
   return 0
 
