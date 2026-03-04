@@ -74,10 +74,7 @@ class FaceDetection:
     bbox_norm: typing.Optional[typing.List[float]] = None,
     affine_matrix: typing.Optional[np.ndarray] = None,
     crop: typing.Optional[np.ndarray] = None,
-    landmarks_all_face_crop: typing.Optional[typing.List[typing.List[float]]],
-    eye_ellipse: typing.Optional[Ellipse],
-    mouth_ellipse: typing.Optional[Ellipse],
-    face_ellipse: typing.Optional[Ellipse] = None,
+    landmarks_all_face_crop: typing.Optional[typing.List[typing.List[float]]] = None,
   ) -> None:
     resolved_bbox_norm = self._resolve_bbox_norm(
       bbox_norm=bbox_norm,
@@ -85,13 +82,23 @@ class FaceDetection:
       width=width,
       height=height,
     )
+    normalized_landmarks = self._normalize_landmarks_face_crop(landmarks_all_face_crop)
+    normalized_face_ellipse = None
+    normalized_eye_ellipse = None
+    normalized_mouth_ellipse = None
+
+    if normalized_landmarks is not None and len(normalized_landmarks) >= 5:
+      normalized_face_ellipse = self._create_face_ellipse(landmarks=normalized_landmarks)
+      normalized_eye_ellipse = self._create_eye_ellipse(landmarks5=normalized_landmarks[:5])
+      normalized_mouth_ellipse = self._create_mouth_ellipse(landmarks5=normalized_landmarks[:5])
+
     object.__setattr__(self, "bbox_norm", resolved_bbox_norm)
     object.__setattr__(self, "affine_matrix", affine_matrix)
     object.__setattr__(self, "crop", crop)
-    object.__setattr__(self, "landmarks_all_face_crop", self._normalize_landmarks_face_crop(landmarks_all_face_crop))
-    object.__setattr__(self, "eye_ellipse", self._normalize_ellipse(eye_ellipse))
-    object.__setattr__(self, "mouth_ellipse", self._normalize_ellipse(mouth_ellipse))
-    object.__setattr__(self, "face_ellipse", self._normalize_ellipse(face_ellipse))
+    object.__setattr__(self, "landmarks_all_face_crop", normalized_landmarks)
+    object.__setattr__(self, "eye_ellipse", normalized_eye_ellipse)
+    object.__setattr__(self, "mouth_ellipse", normalized_mouth_ellipse)
+    object.__setattr__(self, "face_ellipse", normalized_face_ellipse)
 
   @property
   def size_px(self) -> int:
@@ -102,14 +109,10 @@ class FaceDetection:
     return int(min(int(h), int(w)))
 
   def change_crop(self, new_crop: np.ndarray) -> "FaceDetection":
-    return dataclasses.replace(
-      self,
-      crop=new_crop,
+    return FaceDetection(
       bbox_norm=self._resolve_bbox_norm(bbox_norm=self.bbox_norm, bbox_px=None, width=0, height=0),
+      crop=new_crop,
       landmarks_all_face_crop=self._normalize_landmarks_face_crop(self.landmarks_all_face_crop),
-      eye_ellipse=self._normalize_ellipse(self.eye_ellipse),
-      mouth_ellipse=self._normalize_ellipse(self.mouth_ellipse),
-      face_ellipse=self._normalize_ellipse(self.face_ellipse),
     )
 
   def compute_privacy_blur_metrics(
@@ -334,14 +337,117 @@ class FaceDetection:
       result.append([cls._clip01(point[0]), cls._clip01(point[1])])
     return result
 
-  @classmethod
-  def _normalize_ellipse(cls, ellipse: typing.Optional[Ellipse]) -> typing.Optional[Ellipse]:
-    if ellipse is None:
+  @staticmethod
+  def _create_face_ellipse(*, landmarks: typing.List[typing.List[float]]) -> typing.Optional[Ellipse]:
+    if not landmarks or len(landmarks) < 5:
       return None
+
+    points = np.asarray(landmarks, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 5:
+      return None
+
+    points[:, 0] = np.clip(points[:, 0], 0.0, 1.0)
+    points[:, 1] = np.clip(points[:, 1], 0.0, 1.0)
+
+    left_eye, right_eye = points[0], points[1]
+    mouth_left, mouth_right = points[3], points[4]
+    eye_center = (left_eye + right_eye) * 0.5
+    mouth_center = (mouth_left + mouth_right) * 0.5
+
+    eye_vec = right_eye - left_eye
+    eye_dist = float(np.hypot(float(eye_vec[0]), float(eye_vec[1])))
+    eye_to_mouth = mouth_center - eye_center
+    eye_mouth_dist = float(np.hypot(float(eye_to_mouth[0]), float(eye_to_mouth[1])))
+
+    if eye_dist > 1e-6 and eye_mouth_dist > 1e-6:
+      # Shift center toward forehead: 0.74 of the distance from mouth to eyes.
+      center = mouth_center + 0.74 * (eye_center - mouth_center)
+      angle = float(np.degrees(np.arctan2(float(eye_vec[1]), float(eye_vec[0]))))
+
+      # Width requirement: full ellipse width should be 2 * inter-eye distance.
+      axis_x = eye_dist
+
+      # Height requirement: full ellipse height should be 3 * eye-to-mouth distance.
+      axis_y = eye_mouth_dist * 1.50
+      return Ellipse(
+        center=(float(center[0]), float(center[1])),
+        axes=(max(1e-6, axis_x), max(1e-6, axis_y)),
+        angle=angle,
+      )
+
+    hull = cv2.convexHull(points.astype(np.float32).reshape(-1, 1, 2))
+    if hull is None or hull.shape[0] < 3:
+      return None
+
+    (cx, cy), (rw, rh), angle = cv2.minAreaRect(hull)
+    major = max(float(rw), float(rh)) * 1.40
+    minor = min(float(rw), float(rh)) * 2.80
     return Ellipse(
-      center=(cls._clip01(ellipse.center[0]), cls._clip01(ellipse.center[1])),
-      axes=(cls._clip01(ellipse.axes[0]), cls._clip01(ellipse.axes[1])),
-      angle=float(ellipse.angle),
+      center=(float(cx), float(cy)),
+      axes=(max(1e-6, major * 0.5), max(1e-6, minor * 0.5)),
+      angle=float(angle),
+    )
+
+  @staticmethod
+  def _create_eye_ellipse(*, landmarks5: typing.List[typing.List[float]]) -> typing.Optional[Ellipse]:
+    if not landmarks5 or len(landmarks5) < 3:
+      return None
+
+    points = np.asarray(landmarks5, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 3:
+      return None
+
+    left_eye, right_eye, nose = points[:3]
+    lx, ly = float(left_eye[0]), float(left_eye[1])
+    rx, ry = float(right_eye[0]), float(right_eye[1])
+    nx, ny = float(nose[0]), float(nose[1])
+
+    eye_dx = rx - lx
+    eye_dy = ry - ly
+    eye_dist = float(np.hypot(eye_dx, eye_dy))
+    if eye_dist <= 1e-6:
+      return None
+
+    eye_center_x = (lx + rx) * 0.5
+    eye_center_y = (ly + ry) * 0.5
+    nose_vec_x = nx - eye_center_x
+    nose_vec_y = ny - eye_center_y
+    nose_dist = float(np.hypot(nose_vec_x, nose_vec_y))
+
+    angle_deg = float(np.degrees(np.arctan2(eye_dy, eye_dx)))
+    return Ellipse(
+      center=(eye_center_x, eye_center_y),
+      axes=(max(1e-6, eye_dist * 0.90), max(1e-6, max(eye_dist * 0.38, nose_dist * 0.30))),
+      angle=angle_deg,
+    )
+
+  @staticmethod
+  def _create_mouth_ellipse(*, landmarks5: typing.List[typing.List[float]]) -> typing.Optional[Ellipse]:
+    if not landmarks5 or len(landmarks5) < 5:
+      return None
+
+    points = np.asarray(landmarks5, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 5:
+      return None
+
+    left_eye, right_eye, _, mouth_left, mouth_right = points[:5]
+    lx, ly = float(left_eye[0]), float(left_eye[1])
+    rx, ry = float(right_eye[0]), float(right_eye[1])
+    mlx, mly = float(mouth_left[0]), float(mouth_left[1])
+    mrx, mry = float(mouth_right[0]), float(mouth_right[1])
+
+    mouth_center_x = (mlx + mrx) * 0.5
+    mouth_center_y = (mly + mry) * 0.5
+    mouth_dist = float(np.hypot(mrx - mlx, mry - mly))
+    eye_dist = float(np.hypot(rx - lx, ry - ly))
+    if mouth_dist <= 1e-6 and eye_dist <= 1e-6:
+      return None
+
+    angle_deg = float(np.degrees(np.arctan2(ry - ly, rx - lx)))
+    return Ellipse(
+      center=(mouth_center_x, mouth_center_y),
+      axes=(max(1e-6, max(mouth_dist * 0.80, eye_dist * 0.26)), max(1e-6, max(mouth_dist * 0.42, eye_dist * 0.18))),
+      angle=angle_deg,
     )
 
   @staticmethod
