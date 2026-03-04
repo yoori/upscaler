@@ -63,6 +63,7 @@ class FaceDetection:
   landmarks_all_face_crop: typing.Optional[typing.List[typing.List[float]]] = None
   eye_ellipse: typing.Optional[Ellipse] = None
   mouth_ellipse: typing.Optional[Ellipse] = None
+  face_ellipse: typing.Optional[Ellipse] = None
 
   def __init__(
     self,
@@ -76,6 +77,7 @@ class FaceDetection:
     landmarks_all_face_crop: typing.Optional[typing.List[typing.List[float]]],
     eye_ellipse: typing.Optional[Ellipse],
     mouth_ellipse: typing.Optional[Ellipse],
+    face_ellipse: typing.Optional[Ellipse] = None,
   ) -> None:
     resolved_bbox_norm = self._resolve_bbox_norm(
       bbox_norm=bbox_norm,
@@ -89,6 +91,7 @@ class FaceDetection:
     object.__setattr__(self, "landmarks_all_face_crop", self._normalize_landmarks_face_crop(landmarks_all_face_crop))
     object.__setattr__(self, "eye_ellipse", self._normalize_ellipse(eye_ellipse))
     object.__setattr__(self, "mouth_ellipse", self._normalize_ellipse(mouth_ellipse))
+    object.__setattr__(self, "face_ellipse", self._normalize_ellipse(face_ellipse))
 
   @property
   def size_px(self) -> int:
@@ -106,6 +109,7 @@ class FaceDetection:
       landmarks_all_face_crop=self._normalize_landmarks_face_crop(self.landmarks_all_face_crop),
       eye_ellipse=self._normalize_ellipse(self.eye_ellipse),
       mouth_ellipse=self._normalize_ellipse(self.mouth_ellipse),
+      face_ellipse=self._normalize_ellipse(self.face_ellipse),
     )
 
   def compute_privacy_blur_metrics(
@@ -280,6 +284,10 @@ class FaceDetection:
     nose_radius = max(1, int(round(min_dist_to_mouth / 3.0)))
     cv2.circle(mask, (nose_x, nose_y), nose_radius, 255, -1)
     return mask
+
+  def get_face_mask(self, face_crop_shape: typing.Tuple[int, int]) -> np.ndarray:
+    height, width = face_crop_shape
+    return self._render_ellipse_mask(self.face_ellipse, width=width, height=height)
 
   @staticmethod
   def _clip01(value: float) -> float:

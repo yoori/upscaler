@@ -65,14 +65,20 @@ class FaceSearcher:
       )
       eye_ellipse = None
       mouth_ellipse = None
+      face_ellipse = None
       if landmarks_all_face_crop is not None and len(landmarks_all_face_crop) >= 5 and crop is not None and crop.size:
+        image_shape = (int(crop.shape[0]), int(crop.shape[1]))
+        face_ellipse = self.create_face_ellipse(
+          landmarks=landmarks_all_face_crop,
+          image_shape=image_shape,
+        )
         eye_ellipse = self.create_eye_ellipse(
           landmarks5=landmarks_all_face_crop[:5],
-          image_shape=(int(crop.shape[0]), int(crop.shape[1])),
+          image_shape=image_shape,
         )
         mouth_ellipse = self.create_mouth_ellipse(
           landmarks5=landmarks_all_face_crop[:5],
-          image_shape=(int(crop.shape[0]), int(crop.shape[1])),
+          image_shape=image_shape,
         )
 
       faces.append(FaceDetection(
@@ -84,6 +90,7 @@ class FaceSearcher:
         landmarks_all_face_crop=landmarks_all_face_crop,
         eye_ellipse=eye_ellipse,
         mouth_ellipse=mouth_ellipse,
+        face_ellipse=face_ellipse,
       ))
     return faces
 
@@ -177,8 +184,13 @@ class FaceSearcher:
 
     eye_ellipse = None
     mouth_ellipse = None
+    face_ellipse = None
     if landmarks_all_face_crop is not None and len(landmarks_all_face_crop) >= 5:
       face_crop_shape = (int(face_crop.shape[0]), int(face_crop.shape[1]))
+      face_ellipse = self.create_face_ellipse(
+        landmarks=landmarks_all_face_crop,
+        image_shape=face_crop_shape,
+      )
       eye_ellipse = self.create_eye_ellipse(
         landmarks5=landmarks_all_face_crop[:5],
         image_shape=face_crop_shape,
@@ -195,6 +207,47 @@ class FaceSearcher:
       landmarks_all_face_crop=landmarks_all_face_crop,
       eye_ellipse=eye_ellipse,
       mouth_ellipse=mouth_ellipse,
+      face_ellipse=face_ellipse,
+    )
+
+  @staticmethod
+  def create_face_ellipse(
+    *,
+    landmarks: typing.List[typing.List[float]],
+    image_shape: typing.Tuple[int, int],
+  ) -> typing.Optional[Ellipse]:
+    if not landmarks or len(landmarks) < 5:
+      return None
+
+    h, w = image_shape
+    if h <= 0 or w <= 0:
+      return None
+
+    points = np.asarray(landmarks, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 5:
+      return None
+
+    points_px = np.zeros_like(points, dtype=np.float32)
+    points_px[:, 0] = points[:, 0] * float(w)
+    points_px[:, 1] = points[:, 1] * float(h)
+    points_px[:, 0] = np.clip(points_px[:, 0], 0.0, float(max(0, w - 1)))
+    points_px[:, 1] = np.clip(points_px[:, 1], 0.0, float(max(0, h - 1)))
+
+    hull = cv2.convexHull(points_px.astype(np.float32).reshape(-1, 1, 2))
+    if hull is None or hull.shape[0] < 5:
+      return None
+
+    try:
+      (cx, cy), (major, minor), angle = cv2.fitEllipse(hull)
+    except cv2.error:
+      return None
+
+    axis_x = max(1.0, float(major) * 0.5)
+    axis_y = max(1.0, float(minor) * 0.5)
+    return Ellipse(
+      center=(float(cx) / float(w), float(cy) / float(h)),
+      axes=(axis_x / float(w), axis_y / float(h)),
+      angle=float(angle),
     )
 
   @staticmethod

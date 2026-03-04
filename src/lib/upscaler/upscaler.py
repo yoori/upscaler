@@ -555,6 +555,7 @@ class Upscaler(object):
     eye_mask: typing.Optional[np.ndarray],
     mouth_mask: typing.Optional[np.ndarray],
     nose_zone_mask: typing.Optional[np.ndarray],
+    face_mask: typing.Optional[np.ndarray],
   ) -> typing.Optional[np.ndarray]:
     if base_image is None or getattr(base_image, "size", 0) == 0:
       return None
@@ -585,6 +586,7 @@ class Upscaler(object):
       blended = cv2.addWeighted(out, 1.0 - alpha, overlay, alpha, 0)
       out[mask_bool] = blended[mask_bool]
 
+    _apply(face_mask, (255, 0, 255), 0.22)
     _apply(eye_mask, (0, 255, 0), 0.36)
     _apply(mouth_mask, (0, 165, 255), 0.36)
     _apply(nose_zone_mask, (255, 255, 0), 0.30)
@@ -795,11 +797,13 @@ class Upscaler(object):
             eye_mask = face_info.face_detection.get_eye_mask(face_crop_shape)
             mouth_mask = face_info.face_detection.get_mouth_mask(face_crop_shape)
             nose_zone_mask = face_info.face_detection.get_nose_zone_mask(face_crop_shape)
+            face_mask = face_info.face_detection.get_face_mask(face_crop_shape)
             face_masks_overlay = self._build_face_masks_overlay(
               base_image=current_face,
               eye_mask=eye_mask,
               mouth_mask=mouth_mask,
               nose_zone_mask=nose_zone_mask,
+              face_mask=face_mask,
             )
             self._append_face_step(face_info, name="face masks", image=face_masks_overlay)
 
