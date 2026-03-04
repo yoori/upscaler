@@ -234,6 +234,37 @@ class FaceDetection:
       outside_parts=outside_raw,
     )
 
+  def is_face_blurred(
+    self,
+    *,
+    edge_density_ratio_threshold: float = 0.0421462,
+    lap_var_ratio_threshold: float = 0.0092719,
+    pixel_var_ratio_threshold: float = 0.0667524,
+    tenengrad_ratio_threshold: float = 0.0562823,
+    privacy_blur_metrics: typing.Optional[FacePrivacyBlurMetrics] = None,
+  ) -> bool:
+    metrics = self.compute_privacy_blur_metrics() if privacy_blur_metrics is None else privacy_blur_metrics
+    face_blur = metrics.face_blur
+    if face_blur.valid_zone < 0.5 or face_blur.valid_reference < 0.5:
+      return False
+
+    ratios = face_blur.compare
+    ratio_values = [
+      float(ratios.edge_density_ratio),
+      float(ratios.lap_var_ratio),
+      float(ratios.pixel_var_ratio),
+      float(ratios.tenengrad_ratio),
+    ]
+    if not all(np.isfinite(value) for value in ratio_values):
+      return False
+
+    return (
+      float(ratios.edge_density_ratio) <= float(edge_density_ratio_threshold)
+      and float(ratios.lap_var_ratio) <= float(lap_var_ratio_threshold)
+      and float(ratios.pixel_var_ratio) <= float(pixel_var_ratio_threshold)
+      and float(ratios.tenengrad_ratio) <= float(tenengrad_ratio_threshold)
+    )
+
   def get_eye_mask(self, face_crop_shape: typing.Tuple[int, int]) -> np.ndarray:
     height, width = face_crop_shape
     return self._render_ellipse_mask(self.eye_ellipse, width=width, height=height)

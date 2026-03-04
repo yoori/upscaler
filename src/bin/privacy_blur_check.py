@@ -56,6 +56,11 @@ def _build_parser() -> argparse.ArgumentParser:
   parser.add_argument("--face-size", type=int, default=512)
   parser.add_argument("--false-negative-weight", type=float, default=2)
   parser.add_argument(
+    "--eyes-only-check",
+    action="store_true",
+    help="Use only eyes metrics and skip faces detected as face-blurred by FaceDetection.is_face_blurred",
+  )
+  parser.add_argument(
     "--extensions",
     nargs="*",
     default=sorted(IMAGE_EXTENSIONS),
@@ -128,6 +133,7 @@ def _load_labeled_samples(
   *,
   image_paths: typing.List[pathlib.Path],
   searcher: FaceSearcher,
+  eyes_only_check: bool = False,
 ) -> typing.Tuple[typing.List[LabeledSample], typing.List[LabeledSample]]:
   eyes_samples: typing.List[LabeledSample] = []
   face_samples: typing.List[LabeledSample] = []
@@ -150,6 +156,8 @@ def _load_labeled_samples(
         raise ValueError(f"image must contain exactly 1 face ({len(faces)} found): {image_path}")
 
       metrics = faces[0].compute_privacy_blur_metrics()
+      if eyes_only_check and faces[0].is_face_blurred(privacy_blur_metrics=metrics):
+        continue
       #print(f">>>> {image_path}")
       #print("eyes_blur: " + str(metrics.eyes_blur))
       #print("face_blur: " + str(metrics.face_blur) + "\n")
@@ -158,11 +166,12 @@ def _load_labeled_samples(
         has_blur=eyes_blur,
         metrics=_flatten_metrics(metrics, "eyes"),
       ))
-      face_samples.append(LabeledSample(
-        image_path=image_path,
-        has_blur=face_blur,
-        metrics=_flatten_metrics(metrics, "face"),
-      ))
+      if not eyes_only_check:
+        face_samples.append(LabeledSample(
+          image_path=image_path,
+          has_blur=face_blur,
+          metrics=_flatten_metrics(metrics, "face"),
+        ))
 
   return eyes_samples, face_samples
 
@@ -404,7 +413,11 @@ def main() -> int:
     parser.error(f"No images found in: {args.input_dir}")
 
   searcher = FaceSearcher(device=args.device, face_size=args.face_size)
-  eyes_samples, face_samples = _load_labeled_samples(image_paths=image_paths, searcher=searcher)
+  eyes_samples, face_samples = _load_labeled_samples(
+    image_paths=image_paths,
+    searcher=searcher,
+    eyes_only_check=args.eyes_only_check,
+  )
 
   print(f"Processed {len(image_paths)} images")
   print(f"Use {len(eyes_samples)} eyes samples")
@@ -414,19 +427,21 @@ def main() -> int:
   face_fitted = _fit_thresholds(face_samples, false_negative_weight=args.false_negative_weight)
 
   _print_results("eyes", eyes_fitted)
-  _print_results("face", face_fitted)
+  if not args.eyes_only_check:
+    _print_results("face", face_fitted)
   _print_aggregated_results(
     "eyes",
     eyes_samples,
     eyes_fitted,
     false_negative_weight=args.false_negative_weight,
   )
-  _print_aggregated_results(
-    "face",
-    face_samples,
-    face_fitted,
-    false_negative_weight=args.false_negative_weight,
-  )
+  if not args.eyes_only_check:
+    _print_aggregated_results(
+      "face",
+      face_samples,
+      face_fitted,
+      false_negative_weight=args.false_negative_weight,
+    )
 
   return 0
 
