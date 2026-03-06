@@ -59,6 +59,29 @@ class Blurred:
 
 
 @dataclasses.dataclass(frozen=True)
+class BlurEvaluateThresholds:
+  edge_density_ratio_threshold: float
+  lap_var_ratio_threshold: float
+  pixel_var_ratio_threshold: float
+  tenengrad_ratio_threshold: float
+
+
+DEFAULT_FACE_BLUR_EVALUATE_THRESHOLDS = BlurEvaluateThresholds(
+  edge_density_ratio_threshold=0.0421462,
+  lap_var_ratio_threshold=0.0092719,
+  pixel_var_ratio_threshold=0.0667524,
+  tenengrad_ratio_threshold=0.0562823,
+)
+
+DEFAULT_EYES_BLUR_EVALUATE_THRESHOLDS = BlurEvaluateThresholds(
+  edge_density_ratio_threshold=0.0542813,
+  lap_var_ratio_threshold=0.0158647,
+  pixel_var_ratio_threshold=0.285752,
+  tenengrad_ratio_threshold=0.082788,
+)
+
+
+@dataclasses.dataclass(frozen=True)
 class FaceDetection:
   """Face metadata in normalized coordinates relative to source image/crop."""
   # Required for mapping detections back to source image coordinates (paste-back/debug).
@@ -243,16 +266,12 @@ class FaceDetection:
   def is_blurred(
     self,
     *,
-    face_edge_density_ratio_threshold: float = 0.0421462,
-    face_lap_var_ratio_threshold: float = 0.0092719,
-    face_pixel_var_ratio_threshold: float = 0.0667524,
-    face_tenengrad_ratio_threshold: float = 0.0562823,
-    eyes_edge_density_ratio_threshold: float = 0.0542813,
-    eyes_lap_var_ratio_threshold: float = 0.0158647,
-    eyes_pixel_var_ratio_threshold: float = 0.285752,
-    eyes_tenengrad_ratio_threshold: float = 0.082788,
+    face_blur_evaluate_thresholds: typing.Optional[BlurEvaluateThresholds] = None,
+    eyes_blur_evaluate_thresholds: typing.Optional[BlurEvaluateThresholds] = None,
     privacy_blur_metrics: typing.Optional[FacePrivacyBlurMetrics] = None,
   ) -> Blurred:
+    face_thresholds = DEFAULT_FACE_BLUR_EVALUATE_THRESHOLDS if face_blur_evaluate_thresholds is None else face_blur_evaluate_thresholds
+    eyes_thresholds = DEFAULT_EYES_BLUR_EVALUATE_THRESHOLDS if eyes_blur_evaluate_thresholds is None else eyes_blur_evaluate_thresholds
     metrics = self.compute_privacy_blur_metrics() if privacy_blur_metrics is None else privacy_blur_metrics
     face_blur = metrics.face_blur
     if face_blur.valid_zone < 0.5 or face_blur.valid_reference < 0.5:
@@ -269,10 +288,10 @@ class FaceDetection:
       return Blurred(face_blurred=False, eyes_blurred=False)
 
     face_blurred = (
-      float(face_ratios.edge_density_ratio) <= float(face_edge_density_ratio_threshold)
-      and float(face_ratios.lap_var_ratio) <= float(face_lap_var_ratio_threshold)
-      and float(face_ratios.pixel_var_ratio) <= float(face_pixel_var_ratio_threshold)
-      and float(face_ratios.tenengrad_ratio) <= float(face_tenengrad_ratio_threshold)
+      float(face_ratios.edge_density_ratio) <= float(face_thresholds.edge_density_ratio_threshold)
+      and float(face_ratios.lap_var_ratio) <= float(face_thresholds.lap_var_ratio_threshold)
+      and float(face_ratios.pixel_var_ratio) <= float(face_thresholds.pixel_var_ratio_threshold)
+      and float(face_ratios.tenengrad_ratio) <= float(face_thresholds.tenengrad_ratio_threshold)
     )
     if face_blurred:
       return Blurred(face_blurred=True, eyes_blurred=True)
@@ -292,10 +311,10 @@ class FaceDetection:
       return Blurred(face_blurred=False, eyes_blurred=False)
 
     eyes_blurred = (
-      float(eyes_ratios.edge_density_ratio) <= float(eyes_edge_density_ratio_threshold)
-      and float(eyes_ratios.lap_var_ratio) <= float(eyes_lap_var_ratio_threshold)
-      and float(eyes_ratios.pixel_var_ratio) <= float(eyes_pixel_var_ratio_threshold)
-      and float(eyes_ratios.tenengrad_ratio) <= float(eyes_tenengrad_ratio_threshold)
+      float(eyes_ratios.edge_density_ratio) <= float(eyes_thresholds.edge_density_ratio_threshold)
+      and float(eyes_ratios.lap_var_ratio) <= float(eyes_thresholds.lap_var_ratio_threshold)
+      and float(eyes_ratios.pixel_var_ratio) <= float(eyes_thresholds.pixel_var_ratio_threshold)
+      and float(eyes_ratios.tenengrad_ratio) <= float(eyes_thresholds.tenengrad_ratio_threshold)
     )
     return Blurred(face_blurred=False, eyes_blurred=eyes_blurred)
 
